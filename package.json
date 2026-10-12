@@ -1,0 +1,53 @@
+{
+  "name": "@gang-of-beads/pi-web-background-runs",
+  "version": "0.1.0",
+  "description": "PI WEB plugin for pi-background-tasks: a Background tab listing the session's tasks, a running count in the activity line, and task-ended notices in the conversation.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-web",
+    "pi-web-plugin",
+    "pi-background-tasks"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Gang-of-Beads/pi-web-background-runs.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Gang-of-Beads/pi-web-background-runs/issues"
+  },
+  "homepage": "https://github.com/Gang-of-Beads/pi-web-background-runs#readme",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "piWeb": {
+    "plugins": [
+      {
+        "id": "background-runs",
+        "browserRoot": "dist/browser",
+        "module": "dist/browser/pi-web-plugin.js",
+        "serverModule": "dist/server-plugin.js"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test && npm run build && git diff --exit-code -- dist"
+  },
+  "devDependencies": {
+    "@gang-of-beads/pi-web": "^2.202610.4",
+    "@types/node": "^24.13.3",
+    "esbuild": "^0.28.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}
