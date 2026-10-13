@@ -1,0 +1,91 @@
+# Tag-driven release: push a v<version> tag that matches package.json and this
+# workflow checks the package, publishes it to npm, and creates the GitHub
+# Release with that version's CHANGELOG section.
+#
+# Two publishing routes. While the NPM_TOKEN secret exists (a stage-only token,
+# used for the first release of a package, which trusted publishing cannot do)
+# the version is staged: it waits on npmjs.com until a maintainer approves it
+# with 2FA. Without the secret it publishes through trusted publishing (OIDC),
+# configured on npmjs.com for this repository and this file name, with
+# provenance. Keep the file name stable: the trusted publisher is bound to it.
+name: Release (tag push)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    name: npm publish + GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      # Staged publishing and trusted publishing need a newer npm than Node ships.
+      - name: Update npm
+        run: npm install -g npm@^11.15.0
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Type-check, test and build; it fails when the committed dist/ is stale,
+      # which a git install would otherwise ship silently.
+      - name: Check
+        run: npm run check
+
+      - name: Tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          ver="v$(node -p "require('./package.json').version")"
+          if [ "$ver" != "${{ github.ref_name }}" ]; then
+            echo "tag ${{ github.ref_name }} does not match package version $ver"
+            exit 1
+          fi
+
+      # Skipped when the version is already on npm, so a rerun of a released tag
+      # only repairs the GitHub Release.
+      - name: Publish to npm
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          pkg="$(node -p "require('./package.json').name")"
+          ver="$(node -p "require('./package.json').version")"
+          if npm view "$pkg@$ver" version >/dev/null 2>&1; then
+            echo "$pkg@$ver is already on npm; skipping publish"
+          elif [ -n "$NPM_TOKEN" ]; then
+            echo "staging $pkg@$ver; a maintainer approves it on npmjs.com with 2FA"
+            npm stage publish --access public
+          else
+            npm publish --access public --provenance
+          fi
+
+      - name: Release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          pkg="$(node -p "require('./package.json').name")"
+          ver="$(node -p "require('./package.json').version")"
+          awk -v heading="## $ver" '$0 == heading { found = 1; next } /^## / { found = 0 } found' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
+          fence="$(printf '\140\140\140')"
+          printf '\nInstall:\n\n%ssh\npi install npm:%s\n%s\n' "$fence" "$pkg" "$fence" >> release-notes.md
+
+      - name: GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
