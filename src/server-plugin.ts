@@ -1,4 +1,4 @@
-import type { JsonValue, PiWebServerPlugin, ServerPluginActivationContext } from "@gang-of-beads/pi-web/server-plugin-api";
+import type { JsonValue, PiWebServerPlugin, ServerPluginActivationContext } from "@gang-of-beads/pi-web-plugin-api/server-plugin-api";
 import { isAbsolute } from "node:path";
 import { listBackgroundTasks, processStartProbe, runningTasksForSession, type BackgroundTaskInfo } from "./server/tasks.js";
 

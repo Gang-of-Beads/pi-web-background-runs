@@ -1,4 +1,4 @@
-import type { PluginListModel, PluginListRead, PluginListRow } from "@gang-of-beads/pi-web/plugin-api";
+import type { PluginListModel, PluginListRead, PluginListRow } from "@gang-of-beads/pi-web-plugin-api/plugin-api";
 
 /**
  * What the background list shows for each task, decided in one place.

@@ -1,4 +1,4 @@
-import type { PiWebPlugin, PluginActivationContext, WorkspacePanelContext } from "@gang-of-beads/pi-web/plugin-api";
+import type { PiWebPlugin, PluginActivationContext, WorkspacePanelContext } from "@gang-of-beads/pi-web-plugin-api/plugin-api";
 import { backgroundRunCountOf, backgroundRunNote } from "./backgroundRunNote.js";
 import { noticeLabel, taskNotice } from "./taskNotice.js";
 import { backgroundListModel } from "./backgroundTaskRows.js";
