@@ -2,8 +2,8 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { listBackgroundTasks, runningTaskIds, taskIdsForSession } from "./tasks.js";
-import { taskProcessIsOriginal } from "./tasks.js";
+import { listBackgroundTasks, runningTaskIds, taskIdsForSession, type ProcessStart } from "./tasks.js";
+import { classifyPsStart, processStartProbe, runningRecordStatus } from "./tasks.js";
 
 /**
  * These fixtures copy a real registry directory rather than the reader's own
@@ -20,9 +20,9 @@ import { taskProcessIsOriginal } from "./tasks.js";
 const RUNNING_PID = process.pid;
 
 /** The probe a healthy world offers: the runner's pid was born with the seeded start. */
-const fakeProbe = (pid: number): Promise<number | undefined> =>
+const fakeProbe = (pid: number): Promise<ProcessStart> =>
   // Healthy world: the runner's pid was born ≈ at the seeded startTime, 5 seconds ago
-  Promise.resolve(pid === RUNNING_PID ? Date.now() - 5_000 : undefined);
+  Promise.resolve(pid === RUNNING_PID ? { kind: "born", atMs: Date.now() - 5_000 } : { kind: "gone" });
 
 async function fixture(): Promise<string> {
   const cwd = await mkdtemp(join(tmpdir(), "bgtasks-"));
@@ -209,19 +209,78 @@ describe("whether a running record's pid is still the task's own process", () =>
   const START = Date.parse("2026-08-24T10:14:23Z");
 
   it("keeps running when the pid's start time matches the task's", () => {
-    expect(taskProcessIsOriginal(START + 2_000, 69946, START)).toBe(true);
+    expect(runningRecordStatus({ kind: "born", atMs: START + 2_000 }, START)).toBe("running");
   });
 
   it("calls it lost when the number was handed to a later process", () => {
-    expect(taskProcessIsOriginal(START + 5 * 86_400_000, 69946, START)).toBe(false);
+    expect(runningRecordStatus({ kind: "born", atMs: START + 5 * 86_400_000 }, START)).toBe("lost");
   });
 
-  it("calls it lost when the process cannot be probed at all", () => {
-    expect(taskProcessIsOriginal(undefined, 69946, START)).toBe(false);
+  it("calls it lost when the pid has no process", () => {
+    expect(runningRecordStatus({ kind: "gone" }, START)).toBe("lost");
   });
 
-  it("calls it lost when there is no pid to check", () => {
-    expect(taskProcessIsOriginal(START, undefined, START)).toBe(false);
+  it("calls it unknown, not lost, when the probe could not read the start time", () => {
+    expect(runningRecordStatus({ kind: "unreadable" }, START)).toBe("unknown");
+  });
+});
+
+/**
+ * `ps -o lstart=` prints LC_TIME's weekday and month names. Under ar_AE.UTF-8 it printed
+ * "خ أكت 15 14:37:18 2026", `Date` read NaN, and every live task was listed as lost (issue #1).
+ */
+describe("asking ps when a pid's process was born", () => {
+  it("runs ps in the C locale so the start time is English whatever LC_TIME says", async () => {
+    const calls: { args: readonly string[]; env: Readonly<Record<string, string>> }[] = [];
+    const probe = processStartProbe((args, env) => {
+      calls.push({ args, env });
+      return Promise.resolve({ exitCode: 0, stdout: "Thu Oct 15 14:37:18 2026\n" });
+    });
+
+    expect(await probe(4242)).toEqual({ kind: "born", atMs: new Date("Thu Oct 15 14:37:18 2026").getTime() });
+    expect(calls).toEqual([{ args: ["-p", "4242", "-o", "lstart="], env: { LC_ALL: "C" } }]);
+  });
+
+  it("reads a localized start time as unreadable, not as a dead process", () => {
+    expect(classifyPsStart(0, "خ أكت 15 14:37:18 2026")).toEqual({ kind: "unreadable" });
+  });
+
+  it("reads a non-zero exit as no such process", () => {
+    expect(classifyPsStart(1, "")).toEqual({ kind: "gone" });
+  });
+
+  it("reads no exit code, or a ps that could not run, as unreadable", async () => {
+    expect(classifyPsStart(null, "")).toEqual({ kind: "unreadable" });
+    expect(await processStartProbe(() => Promise.reject(new Error("spawn ps ENOENT")))(4242)).toEqual({ kind: "unreadable" });
+  });
+
+  it("lists a running task whose start could not be read as unknown and does not count it", async () => {
+    const cwd = await fixture();
+    const unreadable = (): Promise<ProcessStart> => Promise.resolve({ kind: "unreadable" });
+
+    const tasks = await listBackgroundTasks(cwd, await transcript(cwd), Date.now(), unreadable);
+
+    expect(tasks.find((task) => task.id === "b96da5ec8")?.status).toBe("unknown");
+    expect(tasks.find((task) => task.id === "b25b68e87")?.status).toBe("completed");
+    expect(await runningTaskIds(cwd, unreadable)).toEqual(new Set());
+  });
+
+  it("lists a running record with no pid as lost: it claims no process to check", async () => {
+    const cwd = await fixture();
+    const file = join(cwd, ".pi", "tasks", "session-494694-494694", "b96da5ec8.json");
+    await writeFile(file, JSON.stringify({
+      id: "b96da5ec8",
+      name: "deploy 1.202608.13",
+      command: "bash scripts/deploy.sh",
+      status: "running",
+      outputPath: ".pi/tasks/session-494694-494694/b96da5ec8.output",
+      startTime: Date.now() - 5_000,
+      bytesWritten: 0,
+    }));
+
+    const tasks = await listBackgroundTasks(cwd, await transcript(cwd), Date.now(), fakeProbe);
+
+    expect(tasks.find((task) => task.id === "b96da5ec8")?.status).toBe("lost");
   });
 });
 

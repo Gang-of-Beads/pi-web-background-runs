@@ -18,23 +18,38 @@ function asNumber(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : void 0;
 }
 var PID_REUSE_TOLERANCE_MS = 6e4;
+var PS_ENV = { LC_ALL: "C" };
+function classifyPsStart(exitCode, stdout) {
+  if (exitCode === null) return { kind: "unreadable" };
+  if (exitCode !== 0) return { kind: "gone" };
+  const atMs = new Date(stdout.trim()).getTime();
+  return Number.isFinite(atMs) ? { kind: "born", atMs } : { kind: "unreadable" };
+}
 function processStartProbe(runPs) {
   return async (pid) => {
     try {
-      const { exitCode, stdout } = await runPs(["-p", String(pid), "-o", "lstart="]);
-      if (exitCode !== 0) return void 0;
-      const born = new Date(stdout.trim()).getTime();
-      return Number.isFinite(born) ? born : void 0;
+      const { exitCode, stdout } = await runPs(["-p", String(pid), "-o", "lstart="], PS_ENV);
+      return classifyPsStart(exitCode, stdout);
     } catch {
-      return void 0;
+      return { kind: "unreadable" };
     }
   };
 }
-function taskProcessIsOriginal(startMs, pid, startedAtMs) {
-  if (pid === void 0) return false;
-  if (startMs === void 0) return false;
-  if (startedAtMs === void 0) return true;
-  return Math.abs(startMs - startedAtMs) <= PID_REUSE_TOLERANCE_MS;
+function runningRecordStatus(start, startedAtMs) {
+  switch (start.kind) {
+    case "gone":
+      return "lost";
+    case "unreadable":
+      return "unknown";
+    case "born":
+      if (startedAtMs === void 0) return "running";
+      return Math.abs(start.atMs - startedAtMs) <= PID_REUSE_TOLERANCE_MS ? "running" : "lost";
+  }
+}
+async function probedRunningStatus(task, probeProcessStart) {
+  const pid = asNumber(task.pid);
+  if (pid === void 0) return "lost";
+  return runningRecordStatus(await probeProcessStart(pid), asNumber(task.startTime));
 }
 async function taskIdsForSession(transcriptPath) {
   let size;
@@ -159,9 +174,7 @@ async function runningTaskIds(cwd, probeProcessStart) {
   const running = /* @__PURE__ */ new Set();
   for (const [id, record] of await readTaskRecords(cwd)) {
     if (asString(record.task.status) !== "running") continue;
-    const pid = asNumber(record.task.pid);
-    if (pid === void 0) continue;
-    if (!taskProcessIsOriginal(await probeProcessStart(pid), pid, asNumber(record.task.startTime))) continue;
+    if (await probedRunningStatus(record.task, probeProcessStart) !== "running") continue;
     running.add(id);
   }
   return running;
@@ -193,11 +206,9 @@ async function listBackgroundTasks(cwd, transcriptPath, now, probeProcessStart) 
     if (record === void 0) continue;
     const { task } = record;
     const rawStatus = asString(task.status) ?? "unknown";
-    const pid = asNumber(task.pid);
     const startedAt = asNumber(task.startTime);
     const endedAt = asNumber(task.endTime);
-    const alive = rawStatus === "running" && pid !== void 0 && taskProcessIsOriginal(await probeProcessStart(pid), pid, startedAt);
-    const status = rawStatus === "running" && !alive ? "lost" : rawStatus;
+    const status = rawStatus === "running" ? await probedRunningStatus(task, probeProcessStart) : rawStatus;
     tasks.push({
       id,
       name: asString(task.name) ?? id,
@@ -235,7 +246,7 @@ function tasksAsJson(tasks) {
   }));
 }
 function probeWith(context, signal) {
-  return processStartProbe((args) => context.execFile({ file: "ps", args, signal }));
+  return processStartProbe((args, env) => context.execFile({ file: "ps", args, env, signal }));
 }
 var plugin = {
   apiVersion: 1,

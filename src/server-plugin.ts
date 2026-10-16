@@ -1,6 +1,6 @@
 import type { JsonValue, PiWebServerPlugin, ServerPluginActivationContext } from "@gang-of-beads/pi-web-plugin-api/server-plugin-api";
 import { isAbsolute } from "node:path";
-import { listBackgroundTasks, processStartProbe, runningTasksForSession, type BackgroundTaskInfo } from "./server/tasks.js";
+import { listBackgroundTasks, processStartProbe, runningTasksForSession, type BackgroundTaskInfo, type ProbeProcessStart } from "./server/tasks.js";
 
 /**
  * Background runs' server half: everything PI WEB knows about pi-background-tasks (`bg_run`)
@@ -36,9 +36,9 @@ function tasksAsJson(tasks: readonly BackgroundTaskInfo[]): JsonValue {
   }));
 }
 
-/** When a pid's process was born, read with `ps` through the host's bounded command helper; undefined when it is gone. */
-function probeWith(context: ServerPluginActivationContext, signal: AbortSignal): (pid: number) => Promise<number | undefined> {
-  return processStartProbe((args) => context.execFile({ file: "ps", args, signal }));
+/** When a pid's process was born, read with `ps` through the host's bounded command helper. */
+function probeWith(context: ServerPluginActivationContext, signal: AbortSignal): ProbeProcessStart {
+  return processStartProbe((args, env) => context.execFile({ file: "ps", args, env, signal }));
 }
 
 const plugin: PiWebServerPlugin = {

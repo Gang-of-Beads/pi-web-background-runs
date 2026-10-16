@@ -41,7 +41,10 @@ export interface BackgroundTaskInfo {
   readonly id: string;
   readonly name: string;
   readonly command: string;
-  /** The tool's own status, except that a running record with a dead process reads "lost". */
+  /**
+   * The tool's own status, except that a running record whose process is gone or was replaced reads
+   * "lost", and one whose process could not be checked reads "unknown".
+   */
   readonly status: string;
   readonly startedAt?: string | undefined;
   readonly endedAt?: string | undefined;
@@ -56,7 +59,7 @@ export interface BackgroundTaskInfo {
  * How many of a session's tasks are still running: the running ids in the workspace's registry
  * that the session's transcript started. With none running anywhere, no transcript is read.
  */
-export async function runningTasksForSession(cwd: string, transcriptPath: string, probeProcessStart: (pid: number) => Promise<number | undefined>): Promise<number> {
+export async function runningTasksForSession(cwd: string, transcriptPath: string, probeProcessStart: ProbeProcessStart): Promise<number> {
   const running = await runningTaskIds(cwd, probeProcessStart);
   if (running.size === 0) return 0;
   const owned = await ownedTaskIds(cwd, transcriptPath);
@@ -87,50 +90,95 @@ function asNumber(value: unknown): number | undefined {
 /** How far a process's start may sit from the task's own start and still be the task's process. */
 const PID_REUSE_TOLERANCE_MS = 60_000;
 
-/** Runs `ps` with these arguments: the host's bounded command helper, so the plugin spawns nothing itself. */
-export type RunPs = (args: readonly string[]) => Promise<{ readonly exitCode: number | null; readonly stdout: string }>;
+/**
+ * Runs `ps` with these arguments and environment overrides: the host's bounded command helper, so
+ * the plugin spawns nothing itself.
+ */
+export type RunPs = (
+  args: readonly string[],
+  env: Readonly<Record<string, string>>,
+) => Promise<{ readonly exitCode: number | null; readonly stdout: string }>;
 
 /**
- * When the process behind a pid was born, asked of `ps`; undefined when there is none (`ps` exits
- * non-zero).
+ * What `ps` said about a pid: the process was born at a time, there is no such process, or there
+ * was no answer to read. The last is not the second: a probe that could not tell is no evidence
+ * that the process died.
+ */
+export type ProcessStart =
+  | { readonly kind: "born"; readonly atMs: number }
+  | { readonly kind: "gone" }
+  | { readonly kind: "unreadable" };
+
+export type ProbeProcessStart = (pid: number) => Promise<ProcessStart>;
+
+/**
+ * `ps -o lstart=` prints weekday and month names in the LC_TIME locale, and `Date` parses only the
+ * English ones: under ar_AE every live task read as dead. The C locale makes the output parseable on
+ * both procps (Linux) and BSD `ps` (macOS), which `etimes` would not, being procps-only.
+ */
+const PS_ENV: Readonly<Record<string, string>> = { LC_ALL: "C" };
+
+/**
+ * One `ps` answer, classified. A non-zero exit is how `ps -p` says the pid has no process; no exit
+ * code (killed, timed out) or an exit 0 whose start time does not parse answered nothing.
+ */
+export function classifyPsStart(exitCode: number | null, stdout: string): ProcessStart {
+  if (exitCode === null) return { kind: "unreadable" };
+  if (exitCode !== 0) return { kind: "gone" };
+  const atMs = new Date(stdout.trim()).getTime();
+  return Number.isFinite(atMs) ? { kind: "born", atMs } : { kind: "unreadable" };
+}
+
+/**
+ * When the process behind a pid was born, asked of `ps`. A `ps` that cannot run at all (none on
+ * Windows, an aborted read) answered nothing, so it is unreadable rather than gone.
  *
  * A task killed by a machine restart keeps `status: "running"` in its file forever, because nothing
  * runs to correct it. Reporting that as running would show a spinner for a task that died days ago,
  * so a running record is only believed while its process exists.
  */
-export function processStartProbe(runPs: RunPs): (pid: number) => Promise<number | undefined> {
+export function processStartProbe(runPs: RunPs): ProbeProcessStart {
   return async (pid) => {
     try {
-      const { exitCode, stdout } = await runPs(["-p", String(pid), "-o", "lstart="]);
-      if (exitCode !== 0) return undefined;
-      const born = new Date(stdout.trim()).getTime();
-      return Number.isFinite(born) ? born : undefined;
+      const { exitCode, stdout } = await runPs(["-p", String(pid), "-o", "lstart="], PS_ENV);
+      return classifyPsStart(exitCode, stdout);
     } catch {
-      return undefined;
+      return { kind: "unreadable" };
     }
   };
 }
 
+/** What a record that says "running" is shown as, once its process has been asked about. */
+export type RunningRecordStatus = "running" | "lost" | "unknown";
+
 /**
- * Whether a pid still belongs to the task's own process.
+ * Whether a running record's pid still belongs to the task's own process.
  *
  * Operating systems recycle pids within days: measured live, a web server
  * task that died on August 24 still reported running on August 29 because pid
  * 69946 had been handed to /usr/libexec/microstackshot. A process's start
  * time is its identity: the task's own process started when the task started
  * (exec does not reset it), so a start time more than a minute later belongs
- * to whoever inherited the number. No probe result at all means the process
- * is gone.
+ * to whoever inherited the number. A pid with no process is lost; a probe
+ * that could not read the start time proves neither, and stays unknown.
  */
-export function taskProcessIsOriginal(
-  startMs: number | undefined,
-  pid: number | undefined,
-  startedAtMs: number | undefined,
-): boolean {
-  if (pid === undefined) return false;
-  if (startMs === undefined) return false;
-  if (startedAtMs === undefined) return true;
-  return Math.abs(startMs - startedAtMs) <= PID_REUSE_TOLERANCE_MS;
+export function runningRecordStatus(start: ProcessStart, startedAtMs: number | undefined): RunningRecordStatus {
+  switch (start.kind) {
+    case "gone":
+      return "lost";
+    case "unreadable":
+      return "unknown";
+    case "born":
+      if (startedAtMs === undefined) return "running";
+      return Math.abs(start.atMs - startedAtMs) <= PID_REUSE_TOLERANCE_MS ? "running" : "lost";
+  }
+}
+
+/** A running record's status; one with no pid claims no process to check, so it is lost. */
+async function probedRunningStatus(task: StoredTask, probeProcessStart: ProbeProcessStart): Promise<RunningRecordStatus> {
+  const pid = asNumber(task.pid);
+  if (pid === undefined) return "lost";
+  return runningRecordStatus(await probeProcessStart(pid), asNumber(task.startTime));
 }
 
 /**
@@ -340,14 +388,12 @@ export async function readTaskRecords(cwd: string): Promise<Map<string, { task: 
  */
 export async function runningTaskIds(
   cwd: string,
-  probeProcessStart: (pid: number) => Promise<number | undefined>,
+  probeProcessStart: ProbeProcessStart,
 ): Promise<Set<string>> {
   const running = new Set<string>();
   for (const [id, record] of await readTaskRecords(cwd)) {
     if (asString(record.task.status) !== "running") continue;
-    const pid = asNumber(record.task.pid);
-    if (pid === undefined) continue;
-    if (!taskProcessIsOriginal(await probeProcessStart(pid), pid, asNumber(record.task.startTime))) continue;
+    if (await probedRunningStatus(record.task, probeProcessStart) !== "running") continue;
     running.add(id);
   }
   return running;
@@ -383,7 +429,8 @@ async function ownedTaskIds(cwd: string, transcriptPath: string): Promise<Set<st
  * A session's tasks, newest first, the one someone opened the panel to check being the recent one.
  *
  * A "running" record whose process is gone died without being able to record it (a restart, an
- * OOM kill) and is reported as lost rather than spinning forever. Only a running record is probed:
+ * OOM kill) and is reported as lost rather than spinning forever; one whose process could not be
+ * checked is reported as unknown, neither running nor lost. Only a running record is probed:
  * spawning `ps` for every finished task ever recorded, on every read, was a process storm for
  * answers that cannot change.
  */
@@ -391,7 +438,7 @@ export async function listBackgroundTasks(
   cwd: string,
   transcriptPath: string,
   now: number,
-  probeProcessStart: (pid: number) => Promise<number | undefined>,
+  probeProcessStart: ProbeProcessStart,
 ): Promise<BackgroundTaskInfo[]> {
   const [owned, records] = await Promise.all([ownedTaskIds(cwd, transcriptPath), readTaskRecords(cwd)]);
   const tasks: BackgroundTaskInfo[] = [];
@@ -400,13 +447,9 @@ export async function listBackgroundTasks(
     if (record === undefined) continue;
     const { task } = record;
     const rawStatus = asString(task.status) ?? "unknown";
-    const pid = asNumber(task.pid);
     const startedAt = asNumber(task.startTime);
     const endedAt = asNumber(task.endTime);
-    const alive = rawStatus === "running"
-      && pid !== undefined
-      && taskProcessIsOriginal(await probeProcessStart(pid), pid, startedAt);
-    const status = rawStatus === "running" && !alive ? "lost" : rawStatus;
+    const status = rawStatus === "running" ? await probedRunningStatus(task, probeProcessStart) : rawStatus;
     tasks.push({
       id,
       name: asString(task.name) ?? id,

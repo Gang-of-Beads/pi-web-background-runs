@@ -34,7 +34,7 @@ describe("the registry poll after the watermark", () => {
   it("never probes the process of a task that already finished", async () => {
     const { cwd, transcript } = await fixture();
     const probes: number[] = [];
-    const tasks = await listBackgroundTasks(cwd, transcript, Date.now(), (pid) => { probes.push(pid); return Promise.resolve(undefined); });
+    const tasks = await listBackgroundTasks(cwd, transcript, Date.now(), (pid) => { probes.push(pid); return Promise.resolve({ kind: "gone" }); });
     expect(tasks.map((task) => task.status)).toEqual(["completed"]);
     expect(probes).toEqual([]);
   });
@@ -46,7 +46,7 @@ describe("the registry poll after the watermark", () => {
     // sub-millisecond component the filesystem stamps on write.
     const pinned = new Date("2026-09-01T00:00:00.000Z");
     await utimes(file, pinned, pinned);
-    await listBackgroundTasks(cwd, transcript, Date.now(), () => Promise.resolve(undefined));
+    await listBackgroundTasks(cwd, transcript, Date.now(), () => Promise.resolve({ kind: "gone" }));
     // Rewrite the file with different content but identical size and mtime:
     // an unchanged stat answers from the cache, so the old parse survives.
     const raw = (await stat(file)).size;
@@ -57,20 +57,20 @@ describe("the registry poll after the watermark", () => {
     }).padEnd(raw, " ");
     await writeFile(file, body);
     await utimes(file, pinned, pinned);
-    const tasks = await listBackgroundTasks(cwd, transcript, Date.now(), () => Promise.resolve(undefined));
+    const tasks = await listBackgroundTasks(cwd, transcript, Date.now(), () => Promise.resolve({ kind: "gone" }));
     expect(tasks.map((task) => task.name)).toEqual(["finished"]);
   });
 
   it("re-reads a record whose file changed", async () => {
     const { cwd, transcript } = await fixture();
-    await listBackgroundTasks(cwd, transcript, Date.now(), () => Promise.resolve(undefined));
+    await listBackgroundTasks(cwd, transcript, Date.now(), () => Promise.resolve({ kind: "gone" }));
     const file = join(cwd, ".pi", "tasks", "session-1-1", "done1.json");
     await writeFile(file, JSON.stringify({
       id: "done1", name: "renamed", command: "true", status: "completed",
       pid: 4242, startTime: Date.now() - 60_000, endTime: Date.now() - 40_000,
       outputPath: ".pi/tasks/session-1-1/done1.output",
     }));
-    const tasks = await listBackgroundTasks(cwd, transcript, Date.now(), () => Promise.resolve(undefined));
+    const tasks = await listBackgroundTasks(cwd, transcript, Date.now(), () => Promise.resolve({ kind: "gone" }));
     expect(tasks.map((task) => task.name)).toEqual(["renamed"]);
   });
 });
