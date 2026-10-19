@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { listBackgroundTasks, runningTaskIds, taskIdsForSession, type ProcessStart } from "./tasks.js";
+import { listBackgroundTasks, readTaskOutput, runningTaskIds, taskIdsForSession, type ProcessStart } from "./tasks.js";
 import { classifyPsStart, processStartProbe, runningRecordStatus } from "./tasks.js";
 
 /**
@@ -82,6 +82,35 @@ async function transcript(cwd: string): Promise<string> {
   ].join("\n"));
   return path;
 }
+
+describe("a task's output", () => {
+  it("reads the end of an owned task's output, cut at a line start", async () => {
+    const cwd = await fixture();
+    const path = await transcript(cwd);
+    await writeFile(join(cwd, ".pi", "tasks", "session-494694-494694", "b96da5ec8.output"), "line 1\nline 2\nline 3\n");
+
+    expect(await readTaskOutput(cwd, path, "b96da5ec8", 1024)).toEqual({ known: true, text: "line 1\nline 2\nline 3\n", totalBytes: 21, truncated: false });
+    // The last 10 bytes start inside "line 2"; the half line is left out.
+    expect(await readTaskOutput(cwd, path, "b96da5ec8", 10)).toEqual({ known: true, text: "line 3\n", totalBytes: 21, truncated: true });
+  });
+
+  it("reads nothing for a task another session started, and says when the file is gone", async () => {
+    const cwd = await fixture();
+    const path = await transcript(cwd);
+
+    expect(await readTaskOutput(cwd, path, "other999", 1024)).toEqual({ known: false, reason: "not-owned" });
+    expect(await readTaskOutput(cwd, path, "b25b68e87", 1024)).toEqual({ known: false, reason: "no-output-file" });
+  });
+
+  it("does not follow a record's output path out of the registry", async () => {
+    const cwd = await fixture();
+    const path = await transcript(cwd);
+    await writeFile(join(cwd, "secret.txt"), "not a task's output");
+    await writeFile(join(cwd, ".pi", "tasks", "session-494694-494694", "b25b68e87.json"), JSON.stringify({ id: "b25b68e87", status: "completed", outputPath: "secret.txt" }));
+
+    expect(await readTaskOutput(cwd, path, "b25b68e87", 1024)).toEqual({ known: false, reason: "no-output-file" });
+  });
+});
 
 describe("background tasks", () => {
   it("lists only the tasks this session's transcript claims", async () => {

@@ -3,7 +3,7 @@ import { isAbsolute } from "node:path";
 
 // src/server/tasks.ts
 import { open, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 var TASKS_SUBDIR = ".pi/tasks";
 async function runningTasksForSession(cwd, transcriptPath, probeProcessStart) {
   const running = await runningTaskIds(cwd, probeProcessStart);
@@ -198,6 +198,28 @@ async function ownedTaskIds(cwd, transcriptPath) {
   }
   return owned;
 }
+var OUTPUT_READ_LIMIT_BYTES = 1024 * 1024;
+async function readTaskOutput(cwd, transcriptPath, taskId, tailBytes) {
+  if (!(await ownedTaskIds(cwd, transcriptPath)).has(taskId)) return { known: false, reason: "not-owned" };
+  const outputPath = asString((await readTaskRecords(cwd)).get(taskId)?.task.outputPath);
+  const registry = resolve(cwd, TASKS_SUBDIR) + sep;
+  const file = outputPath === void 0 ? void 0 : resolve(cwd, outputPath);
+  if (file?.startsWith(registry) !== true) return { known: false, reason: "no-output-file" };
+  const handle = await open(file, "r").catch(() => void 0);
+  if (handle === void 0) return { known: false, reason: "no-output-file" };
+  try {
+    const totalBytes = (await handle.stat()).size;
+    const limit = Math.min(Math.max(1, Math.floor(tailBytes)), OUTPUT_READ_LIMIT_BYTES);
+    const start = Math.max(0, totalBytes - limit);
+    const buffer = Buffer.alloc(totalBytes - start);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+    const read = buffer.subarray(0, bytesRead);
+    const lineStart = start === 0 ? 0 : read.indexOf(10) + 1;
+    return { known: true, text: read.toString("utf8", lineStart), totalBytes, truncated: start > 0 || lineStart > 0 };
+  } finally {
+    await handle.close();
+  }
+}
 async function listBackgroundTasks(cwd, transcriptPath, now, probeProcessStart) {
   const [owned, records] = await Promise.all([ownedTaskIds(cwd, transcriptPath), readTaskRecords(cwd)]);
   const tasks = [];
@@ -235,6 +257,14 @@ function sessionFrom(input) {
   if (typeof sessionFile !== "string" || !isAbsolute(sessionFile) || !sessionFile.endsWith(".jsonl")) return void 0;
   return { cwd, sessionFile };
 }
+function taskIdFrom(input) {
+  const taskId = typeof input === "object" && input !== null ? Reflect.get(input, "taskId") : void 0;
+  return typeof taskId === "string" && /^[A-Za-z0-9_-]+$/.test(taskId) ? taskId : void 0;
+}
+function tailBytesFrom(input) {
+  const tailBytes = typeof input === "object" && input !== null ? Reflect.get(input, "tailBytes") : void 0;
+  return typeof tailBytes === "number" && Number.isFinite(tailBytes) && tailBytes > 0 ? tailBytes : OUTPUT_READ_LIMIT_BYTES;
+}
 function tasksAsJson(tasks) {
   return tasks.map((task) => ({
     id: task.id,
@@ -261,6 +291,13 @@ var plugin = {
         const session = sessionFrom(input);
         if (session === void 0) return { known: false, reason: "no-session" };
         return { known: true, tasks: tasksAsJson(await listBackgroundTasks(session.cwd, session.sessionFile, Date.now(), probeWith(context, signal))) };
+      },
+      "tasks.output": async (input) => {
+        const session = sessionFrom(input);
+        if (session === void 0) return { known: false, reason: "no-session" };
+        const taskId = taskIdFrom(input);
+        if (taskId === void 0) return { known: false, reason: "not-owned" };
+        return { ...await readTaskOutput(session.cwd, session.sessionFile, taskId, tailBytesFrom(input)) };
       }
     }
   })

@@ -1,5 +1,5 @@
 import { open, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 
 /**
  * Background-task runs, read from the registry the task tool leaves on disk.
@@ -423,6 +423,43 @@ async function ownedTaskIds(cwd: string, transcriptPath: string): Promise<Set<st
     else owned.delete(id);
   }
   return owned;
+}
+
+/** The most a read of a task's output answers: the panel's Whole log (design-b3s3-v2 §4.4). */
+export const OUTPUT_READ_LIMIT_BYTES = 1024 * 1024;
+
+export type TaskOutputRead =
+  | { readonly known: true; readonly text: string; readonly totalBytes: number; readonly truncated: boolean }
+  | { readonly known: false; readonly reason: "not-owned" | "no-output-file" };
+
+/**
+ * The end of one task's output file, for its row in the panel.
+ *
+ * Only a task this session owns is read (the ownership `listBackgroundTasks` uses), and only a file
+ * under the workspace's registry directory: the path comes from a record on disk, and a record that
+ * points elsewhere must not turn this operation into a reader of any file the daemon can open. A cut
+ * text starts at a line start, so the first line shown is never half a line.
+ */
+export async function readTaskOutput(cwd: string, transcriptPath: string, taskId: string, tailBytes: number): Promise<TaskOutputRead> {
+  if (!(await ownedTaskIds(cwd, transcriptPath)).has(taskId)) return { known: false, reason: "not-owned" };
+  const outputPath = asString((await readTaskRecords(cwd)).get(taskId)?.task.outputPath);
+  const registry = resolve(cwd, TASKS_SUBDIR) + sep;
+  const file = outputPath === undefined ? undefined : resolve(cwd, outputPath);
+  if (file?.startsWith(registry) !== true) return { known: false, reason: "no-output-file" };
+  const handle = await open(file, "r").catch(() => undefined);
+  if (handle === undefined) return { known: false, reason: "no-output-file" };
+  try {
+    const totalBytes = (await handle.stat()).size;
+    const limit = Math.min(Math.max(1, Math.floor(tailBytes)), OUTPUT_READ_LIMIT_BYTES);
+    const start = Math.max(0, totalBytes - limit);
+    const buffer = Buffer.alloc(totalBytes - start);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+    const read = buffer.subarray(0, bytesRead);
+    const lineStart = start === 0 ? 0 : read.indexOf(0x0a) + 1;
+    return { known: true, text: read.toString("utf8", lineStart), totalBytes, truncated: start > 0 || lineStart > 0 };
+  } finally {
+    await handle.close();
+  }
 }
 
 /**
