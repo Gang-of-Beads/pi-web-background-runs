@@ -1,4 +1,4 @@
-import type { PluginListModel, PluginListRead, PluginListRow } from "@gang-of-beads/pi-web-plugin-api/plugin-api";
+import type { PluginListAction, PluginListModel, PluginListRead, PluginListRow, PluginRowExpansion, PluginSessionCommandOutcome } from "@gang-of-beads/pi-web-plugin-api/plugin-api";
 
 /**
  * What the background list shows for each task, decided in one place.
@@ -134,20 +134,76 @@ function rowDetail(row: TaskRow, clock: ClockTime, startedWord: string): string 
   return parts.filter((part) => part !== undefined).join(" · ");
 }
 
-function listRow(row: TaskRow, clock: ClockTime, startedWord: string): PluginListRow {
-  return { id: row.id, title: row.name, ...ROW_SIDE[row.tone](row), detail: rowDetail(row, clock, startedWord) };
+/** What a host with rows that open adds to the list: each row's body, and Stop all beside "Running" while it has rows. */
+export interface ListControls {
+  readonly expansion?: (row: TaskRow) => PluginRowExpansion;
+  readonly stopAll?: (running: readonly TaskRow[]) => PluginListAction;
 }
 
-export function backgroundListModel(tasks: readonly TaskInput[], read: TasksRead, clock: ClockTime = localClockTime): PluginListModel {
+function listRow(row: TaskRow, clock: ClockTime, startedWord: string, controls: ListControls): PluginListRow {
+  const expansion = controls.expansion?.(row);
+  return { id: row.id, title: row.name, ...ROW_SIDE[row.tone](row), detail: rowDetail(row, clock, startedWord), ...(expansion === undefined ? {} : { expansion }) };
+}
+
+export function backgroundListModel(tasks: readonly TaskInput[], read: TasksRead, clock: ClockTime = localClockTime, controls: ListControls = {}): PluginListModel {
   const list = backgroundTaskList(tasks);
   const hidden = list.hiddenFinished;
+  const stopAll = list.running.length === 0 ? undefined : controls.stopAll?.(list.running);
   return {
     read: LIST_READ[read],
     words: LIST_WORDS,
     groups: [
-      { id: "running", heading: "Running", rows: list.running.map((row) => listRow(row, clock, "started ")) },
-      { id: "finished", heading: "Finished", rows: list.finished.map((row) => listRow(row, clock, "")) },
+      { id: "running", heading: "Running", rows: list.running.map((row) => listRow(row, clock, "started ", controls)), ...(stopAll === undefined ? {} : { headingAction: stopAll }) },
+      { id: "finished", heading: "Finished", rows: list.finished.map((row) => listRow(row, clock, "", controls)) },
     ],
     notes: hidden === 0 ? [] : [`${String(hidden)} older ${hidden === 1 ? "run" : "runs"} not shown`],
   };
+}
+
+/**
+ * What a row says after Stop (design-b3s3-v2 §4.4), decided from the command's outcome and whether the
+ * list still reads the task running. A command that ran without a word claims no success: the note waits for the list.
+ * The extension refuses a task that is no longer running with an error notice, which is what a second
+ * device's Stop meets once the first one stopped it.
+ */
+export type StopNote = "pending" | "said" | "already-stopped" | "ran-still-running" | "refused" | "waiting" | "unknown";
+
+/** A Stop still in flight is `undefined`. */
+export type StopOutcome = PluginSessionCommandOutcome | undefined;
+
+export function stopNote(outcome: StopOutcome, stillRunning: boolean): StopNote {
+  if (outcome === undefined) return "pending";
+  if (outcome.kind !== "ran") return outcome.kind;
+  const last = outcome.notices.at(-1);
+  if (!stillRunning && (last === undefined || last.level === "error")) return "already-stopped";
+  return last === undefined ? "ran-still-running" : "said";
+}
+
+export type NoteTone = "info" | "warning" | "error";
+
+export interface NoteLine {
+  readonly words: string;
+  readonly tone: NoteTone;
+}
+
+export const STOP_NOTE_LINE: Readonly<Record<StopNote, (outcome: StopOutcome) => NoteLine>> = {
+  "pending": () => ({ words: "Stopping…", tone: "info" }),
+  "said": (outcome) => {
+    const last = outcome?.kind === "ran" ? outcome.notices.at(-1) : undefined;
+    return { words: last?.message ?? "", tone: last?.level ?? "info" };
+  },
+  "already-stopped": () => ({ words: "Already stopped", tone: "info" }),
+  "ran-still-running": () => ({ words: "The command ran; the task still reads running.", tone: "warning" }),
+  "refused": (outcome) => ({ words: outcome?.kind === "refused" ? outcome.words : "", tone: "error" }),
+  "waiting": () => ({ words: "No answer yet from the session; the list shows what happened.", tone: "info" }),
+  "unknown": () => ({ words: "No answer from the machine; the list shows what happened.", tone: "warning" }),
+};
+
+/** A byte count the way the Whole log and the tail say it: "8 KiB", "12.4 MiB". */
+export function byteSize(bytes: number): string {
+  const units: readonly [number, string][] = [[1024 * 1024, "MiB"], [1024, "KiB"]];
+  for (const [size, unit] of units) {
+    if (bytes >= size) return `${String(Math.round((bytes / size) * 10) / 10)} ${unit}`;
+  }
+  return `${String(bytes)} bytes`;
 }

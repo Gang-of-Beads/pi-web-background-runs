@@ -104,21 +104,49 @@ function rowDetail(row2, clock, startedWord) {
   const parts = [started === void 0 ? void 0 : `${startedWord}${started}`, durationLabel(row2.durationMs)];
   return parts.filter((part) => part !== void 0).join(" \xB7 ");
 }
-function listRow(row2, clock, startedWord) {
-  return { id: row2.id, title: row2.name, ...ROW_SIDE[row2.tone](row2), detail: rowDetail(row2, clock, startedWord) };
+function listRow(row2, clock, startedWord, controls) {
+  const expansion = controls.expansion?.(row2);
+  return { id: row2.id, title: row2.name, ...ROW_SIDE[row2.tone](row2), detail: rowDetail(row2, clock, startedWord), ...expansion === void 0 ? {} : { expansion } };
 }
-function backgroundListModel(tasks, read, clock = localClockTime) {
+function backgroundListModel(tasks, read, clock = localClockTime, controls = {}) {
   const list = backgroundTaskList(tasks);
   const hidden = list.hiddenFinished;
+  const stopAll = list.running.length === 0 ? void 0 : controls.stopAll?.(list.running);
   return {
     read: LIST_READ[read],
     words: LIST_WORDS,
     groups: [
-      { id: "running", heading: "Running", rows: list.running.map((row2) => listRow(row2, clock, "started ")) },
-      { id: "finished", heading: "Finished", rows: list.finished.map((row2) => listRow(row2, clock, "")) }
+      { id: "running", heading: "Running", rows: list.running.map((row2) => listRow(row2, clock, "started ", controls)), ...stopAll === void 0 ? {} : { headingAction: stopAll } },
+      { id: "finished", heading: "Finished", rows: list.finished.map((row2) => listRow(row2, clock, "", controls)) }
     ],
     notes: hidden === 0 ? [] : [`${String(hidden)} older ${hidden === 1 ? "run" : "runs"} not shown`]
   };
+}
+function stopNote(outcome, stillRunning) {
+  if (outcome === void 0) return "pending";
+  if (outcome.kind !== "ran") return outcome.kind;
+  const last = outcome.notices.at(-1);
+  if (!stillRunning && (last === void 0 || last.level === "error")) return "already-stopped";
+  return last === void 0 ? "ran-still-running" : "said";
+}
+var STOP_NOTE_LINE = {
+  "pending": () => ({ words: "Stopping\u2026", tone: "info" }),
+  "said": (outcome) => {
+    const last = outcome?.kind === "ran" ? outcome.notices.at(-1) : void 0;
+    return { words: last?.message ?? "", tone: last?.level ?? "info" };
+  },
+  "already-stopped": () => ({ words: "Already stopped", tone: "info" }),
+  "ran-still-running": () => ({ words: "The command ran; the task still reads running.", tone: "warning" }),
+  "refused": (outcome) => ({ words: outcome?.kind === "refused" ? outcome.words : "", tone: "error" }),
+  "waiting": () => ({ words: "No answer yet from the session; the list shows what happened.", tone: "info" }),
+  "unknown": () => ({ words: "No answer from the machine; the list shows what happened.", tone: "warning" })
+};
+function byteSize(bytes) {
+  const units = [[1024 * 1024, "MiB"], [1024, "KiB"]];
+  for (const [size, unit] of units) {
+    if (bytes >= size) return `${String(Math.round(bytes / size * 10) / 10)} ${unit}`;
+  }
+  return `${String(bytes)} bytes`;
 }
 
 // src/tasksRead.ts
@@ -190,6 +218,129 @@ function tasksFrom(answer) {
 function isRecord(value) {
   return typeof value === "object" && value !== null;
 }
+var OUTPUT_UNREAD = { read: "reading", text: "", totalBytes: 0, truncated: false };
+var OUTPUT_POLL_MS = 2e3;
+var TaskOutputReads = class {
+  constructor(changed) {
+    this.changed = changed;
+  }
+  changed;
+  entries = /* @__PURE__ */ new Map();
+  view(key) {
+    return this.entries.get(key)?.view ?? OUTPUT_UNREAD;
+  }
+  refresh(key, running, now, ask) {
+    const entry = this.entries.get(key) ?? { view: OUTPUT_UNREAD, inFlight: false, answeredAt: void 0, answeredRunning: false };
+    this.entries.set(key, entry);
+    if (entry.inFlight || !outputReadDue(entry, running, now)) return;
+    entry.inFlight = true;
+    const land = (view) => {
+      if (this.entries.get(key) !== entry) return;
+      entry.inFlight = false;
+      entry.view = view;
+      entry.answeredAt = Date.now();
+      entry.answeredRunning = running;
+      this.changed(running ? OUTPUT_POLL_MS : void 0);
+    };
+    ask().then(
+      (answer) => {
+        land(outputFrom(answer) ?? { ...entry.view, read: "failed" });
+      },
+      () => {
+        land({ ...entry.view, read: "failed" });
+      }
+    );
+  }
+  forget(key) {
+    this.entries.delete(key);
+  }
+};
+function outputReadDue(entry, running, now) {
+  if (entry.answeredAt === void 0) return true;
+  if (running) return now - entry.answeredAt >= OUTPUT_POLL_MS;
+  return entry.answeredRunning;
+}
+function outputFrom(answer) {
+  if (!isRecord(answer)) return void 0;
+  const { known, text, totalBytes, truncated, reason } = answer;
+  if (known === true && typeof text === "string" && typeof totalBytes === "number" && typeof truncated === "boolean") {
+    return { read: "ready", text, totalBytes, truncated };
+  }
+  if (known === false && (reason === "no-session" || reason === "not-owned" || reason === "no-output-file")) {
+    return { read: "failed", text: "", totalBytes: 0, truncated: false, missing: reason };
+  }
+  return void 0;
+}
+
+// src/taskDetail.ts
+var OUTPUT_TAIL_BYTES = 8 * 1024;
+var WHOLE_LOG_BYTES = 1024 * 1024;
+var TASK_DETAIL_SHELL = `<style>
+  :host { display: flex; flex-direction: column; gap: var(--pi-space-3, 8px); min-width: 0; }
+  ::slotted([slot="note"]) { margin: 0; color: var(--pi-muted); font-size: var(--pi-text-xs); overflow-wrap: anywhere; }
+  ::slotted([data-tone="warning"]) { color: var(--pi-warning); }
+  ::slotted([data-tone="error"]) { color: var(--pi-danger); }
+  ::slotted([slot="actions"]) { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--pi-space-3, 8px); }
+</style><slot name="note"></slot><slot></slot><slot name="actions"></slot>`;
+var WHOLE_LOG_SHELL = `<style>
+  :host { box-sizing: border-box; display: flex; flex-direction: column; gap: var(--pi-space-3, 8px); flex: 1 1 auto; height: 100%; min-height: 0; padding: var(--pi-space-4, 12px) var(--pi-space-5, 16px) max(var(--pi-space-5, 16px), env(safe-area-inset-bottom)); }
+  header { display: flex; align-items: flex-start; gap: var(--pi-space-3, 8px); }
+  .titles { display: flex; flex-direction: column; gap: var(--pi-space-1, 2px); flex: 1 1 auto; min-width: 0; }
+  ::slotted([slot="title"]) { margin: 0; font-size: var(--pi-text-base); font-weight: 600; overflow-wrap: anywhere; }
+  ::slotted([slot="cut"]) { margin: 0; color: var(--pi-dim); font-size: var(--pi-text-xs); }
+  ::slotted([slot="close"]) { flex: none; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: var(--pi-radius-md); background: transparent; color: inherit; cursor: pointer; }
+  ::slotted([slot="close"]:focus-visible) { outline: var(--pi-focus-ring-width, 2px) solid var(--pi-accent); }
+  .body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+</style><header><div class="titles"><slot name="title"></slot><slot name="cut"></slot></div><slot name="close"></slot></header><div class="body"><slot></slot></div>`;
+function defineTaskDetailElements() {
+  defineShell("bg-task-detail", TASK_DETAIL_SHELL);
+  defineShell("bg-whole-log", WHOLE_LOG_SHELL);
+}
+function defineShell(tag, markup) {
+  if (customElements.get(tag) !== void 0) return;
+  customElements.define(tag, class extends HTMLElement {
+    constructor() {
+      super();
+      this.attachShadow({ mode: "open" }).innerHTML = markup;
+    }
+  });
+}
+var MISSING_WORDS = {
+  "no-session": "This session has no transcript yet.",
+  "not-owned": "This session did not start this run.",
+  "no-output-file": "The output file is gone."
+};
+function outputWords(running, output) {
+  return {
+    empty: running ? "No output yet." : "The task wrote no output.",
+    reading: "Reading the output\u2026",
+    failed: output.missing === void 0 ? "Could not read the output." : MISSING_WORDS[output.missing],
+    stale: "Could not refresh - showing the last read."
+  };
+}
+function cutWords(output, limitBytes) {
+  return output.truncated ? `Showing the last ${byteSize(limitBytes)} of ${byteSize(output.totalBytes)}` : void 0;
+}
+function taskDetailBody(html, ui, detail) {
+  const cutAbove = cutWords(detail.output, OUTPUT_TAIL_BYTES);
+  return html`<bg-task-detail>
+    ${detail.note === void 0 ? "" : html`<p slot="note" data-tone=${detail.note.tone}>${detail.note.words}</p>`}
+    ${ui.renderOutput({ label: `Output of ${detail.name}`, read: detail.output.read, text: detail.output.text, words: outputWords(detail.running, detail.output), ...cutAbove === void 0 ? {} : { cutAbove } })}
+    <div slot="actions">
+      ${ui.renderButton({ label: "Whole log", busy: detail.wholeLog.busy, run: detail.wholeLog.open })}
+      ${detail.stop === void 0 ? "" : ui.renderButton({ label: "Stop", tone: "danger", busy: detail.stop.busy, run: detail.stop.run })}
+    </div>
+  </bg-task-detail>`;
+}
+function wholeLogContent(html, ui, log) {
+  const cut = cutWords(log.output, WHOLE_LOG_BYTES);
+  return html`<bg-whole-log>
+    <h2 slot="title">${log.name}</h2>
+    ${cut === void 0 ? "" : html`<p slot="cut">${cut}</p>`}
+    <button slot="close" type="button" aria-label="Close" @click=${log.close}>${log.closeIcon ?? "Close"}</button>
+    ${ui.renderOutput({ label: `Whole log of ${log.name}`, read: log.output.read, text: log.output.text, words: outputWords(log.running, log.output), size: "fill" })}
+  </bg-whole-log>`;
+}
 
 // src/pi-web-plugin.ts
 function scopeOf(panel) {
@@ -204,6 +355,8 @@ function readKeyOf(panel) {
   return `${String(status?.backgroundRunCount ?? 0)}:${String(status?.isStreaming === true)}`;
 }
 var NO_TRANSCRIPT = { tasks: [], read: "read" };
+var STOP_NEEDS_NEWER_HOST = { words: "Stop needs a newer PI WEB on this machine.", tone: "info" };
+var LOST_ANSWER = { kind: "unknown", words: "" };
 var plugin = {
   apiVersion: 2,
   name: "Background Runs",
@@ -230,6 +383,132 @@ var plugin = {
       reader.follow(scope, readKeyOf(panel));
       return reader.viewFor(scope.sessionFile);
     };
+    const opened = /* @__PURE__ */ new Set();
+    const stops = /* @__PURE__ */ new Map();
+    const wholeLogsReading = /* @__PURE__ */ new Set();
+    const stopAllsInFlight = /* @__PURE__ */ new Map();
+    const pollAfter = (ms) => {
+      setTimeout(() => {
+        if (document.visibilityState === "visible") requestUpdate();
+        else document.addEventListener("visibilitychange", () => {
+          requestUpdate();
+        }, { once: true });
+      }, ms);
+    };
+    const outputs = new TaskOutputReads((pollAgainInMs) => {
+      requestUpdate();
+      if (pollAgainInMs !== void 0) pollAfter(pollAgainInMs);
+    });
+    if (ui?.renderOutput !== void 0) defineTaskDetailElements();
+    const rowControls = (panel, scope) => {
+      const renderOutput = ui?.renderOutput;
+      const renderButton = ui?.renderButton;
+      if (ui === void 0 || renderOutput === void 0 || renderButton === void 0 || callOperation === void 0) return {};
+      const rowUi = { renderOutput, renderButton };
+      const machineId = panel.machine.id;
+      const sessionKey = JSON.stringify([machineId, scope.sessionFile]);
+      const keyOf = (taskId) => JSON.stringify([machineId, scope.sessionFile, taskId]);
+      const readOutput = (taskId, tailBytes) => callOperation("tasks.output", { cwd: scope.cwd, sessionFile: scope.sessionFile, taskId, tailBytes });
+      const stopPending = (key) => stops.has(key) && stops.get(key) === void 0;
+      const session = panel.session;
+      const stop = session === void 0 ? void 0 : (row2) => {
+        const key = keyOf(row2.id);
+        stops.set(key, void 0);
+        requestUpdate();
+        return session.runCommand({ sessionId: session.id, name: "kill", args: row2.id }).catch(() => LOST_ANSWER).then((outcome) => {
+          stops.set(key, outcome);
+          reader.forget();
+          requestUpdate();
+        });
+      };
+      const openWholeLog = (row2, key) => {
+        wholeLogsReading.add(key);
+        requestUpdate();
+        void readOutput(row2.id, WHOLE_LOG_BYTES).then(outputFrom, () => void 0).then((output) => {
+          wholeLogsReading.delete(key);
+          requestUpdate();
+          const dialog = ui.showDialog({
+            label: `${row2.name} log`,
+            presentation: "fullscreen",
+            content: wholeLogContent(html, rowUi, {
+              name: row2.name,
+              running: row2.tone === "running",
+              output: output ?? { read: "failed", text: "", totalBytes: 0, truncated: false },
+              close: () => {
+                dialog.close();
+              },
+              closeIcon: ui.renderCloseIcon?.()
+            })
+          });
+        });
+      };
+      const noteOf = (row2, key) => {
+        const running = row2.tone === "running";
+        if (stops.has(key)) {
+          const outcome = stops.get(key);
+          return STOP_NOTE_LINE[stopNote(outcome, running)](outcome);
+        }
+        return running && stop === void 0 ? STOP_NEEDS_NEWER_HOST : void 0;
+      };
+      const confirm = ui.confirm;
+      return {
+        expansion: (row2) => {
+          const key = keyOf(row2.id);
+          return {
+            expanded: opened.has(key),
+            onToggle: () => {
+              if (opened.delete(key)) outputs.forget(key);
+              else opened.add(key);
+              requestUpdate();
+            },
+            body: () => {
+              const running = row2.tone === "running";
+              outputs.refresh(key, running, Date.now(), () => readOutput(row2.id, OUTPUT_TAIL_BYTES));
+              return taskDetailBody(html, rowUi, {
+                name: row2.name,
+                running,
+                output: outputs.view(key),
+                note: noteOf(row2, key),
+                wholeLog: { busy: wholeLogsReading.has(key), open: () => {
+                  if (!wholeLogsReading.has(key)) openWholeLog(row2, key);
+                } },
+                stop: !running || stop === void 0 ? void 0 : { busy: stopPending(key), run: () => {
+                  if (!stopPending(key)) void stop(row2);
+                } }
+              });
+            }
+          };
+        },
+        ...stop === void 0 || confirm === void 0 ? {} : {
+          stopAll: (running) => ({
+            id: "stop-all",
+            label: "Stop all",
+            tone: "danger",
+            busy: (stopAllsInFlight.get(sessionKey) ?? 0) > 0,
+            run: () => {
+              const count = running.length;
+              void confirm({
+                title: `Stop ${String(count)} background ${count === 1 ? "run" : "runs"}?`,
+                message: "Each one is sent /kill now. What they wrote so far stays in their output.",
+                confirmLabel: "Stop all",
+                tone: "danger"
+              }).then((confirmed) => {
+                if (!confirmed) return;
+                const sends = running.filter((row2) => !stopPending(keyOf(row2.id)));
+                stopAllsInFlight.set(sessionKey, (stopAllsInFlight.get(sessionKey) ?? 0) + sends.length);
+                for (const row2 of sends) {
+                  void stop(row2).finally(() => {
+                    stopAllsInFlight.set(sessionKey, (stopAllsInFlight.get(sessionKey) ?? 1) - 1);
+                    requestUpdate();
+                  });
+                }
+                requestUpdate();
+              });
+            }
+          })
+        }
+      };
+    };
     return {
       contributions: {
         workspacePanels: [
@@ -245,7 +524,8 @@ var plugin = {
             },
             render: (panel) => {
               const view = viewOf(panel);
-              return ui?.renderList === void 0 ? html`<p class="muted">This list needs a newer PI WEB on this device.</p>` : ui.renderList(backgroundListModel(view.tasks, view.read));
+              const scope = scopeOf(panel);
+              return ui?.renderList === void 0 ? html`<p class="muted">This list needs a newer PI WEB on this device.</p>` : ui.renderList(backgroundListModel(view.tasks, view.read, localClockTime, scope === void 0 ? {} : rowControls(panel, scope)));
             }
           }
         ],

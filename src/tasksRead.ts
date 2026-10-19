@@ -95,3 +95,85 @@ function tasksFrom(answer: unknown): readonly TaskInput[] | undefined {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
+
+/** What one task's row knows of its output: the list's read states, and why there is none when the machine said so. */
+export interface OutputView {
+  readonly read: "reading" | "ready" | "failed";
+  readonly text: string;
+  readonly totalBytes: number;
+  readonly truncated: boolean;
+  readonly missing?: "no-session" | "not-owned" | "no-output-file";
+}
+
+const OUTPUT_UNREAD: OutputView = { read: "reading", text: "", totalBytes: 0, truncated: false };
+
+/** How often an open running row reads its output again. */
+export const OUTPUT_POLL_MS = 2000;
+
+interface OutputEntry {
+  view: OutputView;
+  inFlight: boolean;
+  answeredAt: number | undefined;
+  answeredRunning: boolean;
+}
+
+/**
+ * The output reads of the rows that are open, each under its caller's key (machine, session, task),
+ * so no row can show another session's output.
+ *
+ * A read is asked only when the row is drawn (`refresh`), so nothing is read while the page is off
+ * screen. An open running row reads again {@link OUTPUT_POLL_MS} after its last answer; a finished
+ * row reads once, and once more if its last answer came while it still ran. A failed read keeps the
+ * text it had; a machine's "there is none" replaces it. Closing a row forgets its read.
+ */
+export class TaskOutputReads {
+  private readonly entries = new Map<string, OutputEntry>();
+
+  constructor(private readonly changed: (pollAgainInMs?: number) => void) {}
+
+  view(key: string): OutputView {
+    return this.entries.get(key)?.view ?? OUTPUT_UNREAD;
+  }
+
+  refresh(key: string, running: boolean, now: number, ask: () => Promise<unknown>): void {
+    const entry = this.entries.get(key) ?? { view: OUTPUT_UNREAD, inFlight: false, answeredAt: undefined, answeredRunning: false };
+    this.entries.set(key, entry);
+    if (entry.inFlight || !outputReadDue(entry, running, now)) return;
+    entry.inFlight = true;
+    const land = (view: OutputView): void => {
+      if (this.entries.get(key) !== entry) return;
+      entry.inFlight = false;
+      entry.view = view;
+      entry.answeredAt = Date.now();
+      entry.answeredRunning = running;
+      this.changed(running ? OUTPUT_POLL_MS : undefined);
+    };
+    ask().then(
+      (answer) => { land(outputFrom(answer) ?? { ...entry.view, read: "failed" }); },
+      () => { land({ ...entry.view, read: "failed" }); },
+    );
+  }
+
+  forget(key: string): void {
+    this.entries.delete(key);
+  }
+}
+
+function outputReadDue(entry: OutputEntry, running: boolean, now: number): boolean {
+  if (entry.answeredAt === undefined) return true;
+  if (running) return now - entry.answeredAt >= OUTPUT_POLL_MS;
+  return entry.answeredRunning;
+}
+
+/** The view a `tasks.output` answer gives; undefined when the answer is not one, which is a failed read. */
+export function outputFrom(answer: unknown): OutputView | undefined {
+  if (!isRecord(answer)) return undefined;
+  const { known, text, totalBytes, truncated, reason } = answer;
+  if (known === true && typeof text === "string" && typeof totalBytes === "number" && typeof truncated === "boolean") {
+    return { read: "ready", text, totalBytes, truncated };
+  }
+  if (known === false && (reason === "no-session" || reason === "not-owned" || reason === "no-output-file")) {
+    return { read: "failed", text: "", totalBytes: 0, truncated: false, missing: reason };
+  }
+  return undefined;
+}

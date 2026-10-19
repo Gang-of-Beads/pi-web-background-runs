@@ -3,12 +3,14 @@
 A [PI WEB](https://github.com/Gang-of-Beads/pi-web) plugin for [pi-background-tasks](https://www.npmjs.com/package/pi-background-tasks), the extension behind the `bg_run` tool.
 
 - A **Background** tab beside the conversation lists the open session's background tasks with their state and how long they ran; its badge counts the running ones.
+- A task's row opens to the end of its output, which follows a running task every two seconds while the tab is on screen. **Whole log** shows the last 1 MiB of the output on the whole screen and says when it is cut. **Stop** on a running task sends the extension's `/kill <id>` to the session at once and shows the extension's answer on the row; **Stop all** beside "Running" asks first, then stops every running task.
 - The activity line under the conversation says how many background runs the session has going.
 - A task's end notice (`background-task-notification`) is drawn as a short "Background task" row in the conversation.
 
 ## Requirements
 
 - PI WEB 2.202610.5 or later. Earlier releases bundle their own copy of this plugin, which wins over an installed one (Settings → PI WEB plugins reports the duplicate id).
+- Rows that open need a PI WEB whose plugin API has `ui.renderOutput` (plugin API 0.1.0-alpha.6); older releases show the rows without opening them. Stop and Stop all also need a PI WEB that lets a plugin run the session commands it declares; without it an open running row says "Stop needs a newer PI WEB on this machine."
 - The pi-background-tasks extension installed in pi.
 
 ## Install
@@ -23,7 +25,7 @@ The plugin has a server part, so restart the PI WEB session daemon, then reload 
 
 ## How it works
 
-The server part runs inside the PI WEB session daemon. It reads the registry pi-background-tasks keeps under the project folder (`.pi/tasks`), matches each task to the session that started it, and answers the browser's `tasks.list` operation. Once it has matched a task, it records the match in `.pi/tasks/attribution.json`, so the task stays with its session after compaction removes the transcript line that proved it. It declares the extension's directories (`.pi/tasks`, `.pi/delegate`), so while the plugin is on the daemon watches them to keep the running count current, and the Files and Git panels ignore their churn. The browser part draws the tab, the activity note and the notice row.
+The server part runs inside the PI WEB session daemon. It reads the registry pi-background-tasks keeps under the project folder (`.pi/tasks`), matches each task to the session that started it, and answers the browser's `tasks.list` operation. Its `tasks.output` operation reads the end of one of the session's tasks' output files (8 KiB for an open row, 1 MiB for the Whole log), cut at a line start; it reads only tasks the session owns and only files under `.pi/tasks`. Once it has matched a task, it records the match in `.pi/tasks/attribution.json`, so the task stays with its session after compaction removes the transcript line that proved it. It declares the extension's directories (`.pi/tasks`, `.pi/delegate`), so while the plugin is on the daemon watches them to keep the running count current, and the Files and Git panels ignore their churn. The browser part draws the tab, the activity note and the notice row. The package declares `kill` in `piWeb.plugins[].sessionCommands`, so PI WEB lets the tab run `/kill <id>` in the session on screen and shows the declaration on the plugin's card in Settings.
 
 ## Development
 
