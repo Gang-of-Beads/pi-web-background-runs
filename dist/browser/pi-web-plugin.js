@@ -150,7 +150,11 @@ function byteSize(bytes) {
 }
 
 // src/tasksRead.ts
-var UNREAD = { tasks: [], read: "unread" };
+var UNREAD = { tasks: [], read: "unread", readAt: 0 };
+function tasksAt(view, now) {
+  const sinceRead = Math.max(0, now - view.readAt);
+  return view.tasks.map((task) => task.status === "running" && task.durationMs !== void 0 ? { ...task, durationMs: task.durationMs + sinceRead } : task);
+}
 var TasksReader = class {
   constructor(ask, changed) {
     this.ask = ask;
@@ -188,12 +192,12 @@ var TasksReader = class {
       (answer) => {
         if (!current()) return;
         const tasks = tasksFrom(answer);
-        this.view = tasks === void 0 ? { tasks: this.view.tasks, read: "failed" } : { tasks, read: "read" };
+        this.view = tasks === void 0 ? { ...this.view, read: "failed" } : { tasks, read: "read", readAt: Date.now() };
         this.changed();
       },
       () => {
         if (!current()) return;
-        this.view = { tasks: this.view.tasks, read: "failed" };
+        this.view = { ...this.view, read: "failed" };
         this.changed();
       }
     );
@@ -354,7 +358,8 @@ function readKeyOf(panel) {
   const status = panel.state?.status;
   return `${String(status?.backgroundRunCount ?? 0)}:${String(status?.isStreaming === true)}`;
 }
-var NO_TRANSCRIPT = { tasks: [], read: "read" };
+var NO_TRANSCRIPT = { tasks: [], read: "read", readAt: 0 };
+var ELAPSED_TICK_MS = 1e3;
 var STOP_NEEDS_NEWER_HOST = { words: "Stop needs a newer PI WEB on this machine.", tone: "info" };
 var LOST_ANSWER = { kind: "unknown", words: "" };
 var plugin = {
@@ -387,13 +392,22 @@ var plugin = {
     const stops = /* @__PURE__ */ new Map();
     const wholeLogsReading = /* @__PURE__ */ new Set();
     const stopAllsInFlight = /* @__PURE__ */ new Map();
-    const pollAfter = (ms) => {
+    const pollAfter = (ms, due = () => {
+      requestUpdate();
+    }) => {
       setTimeout(() => {
-        if (document.visibilityState === "visible") requestUpdate();
-        else document.addEventListener("visibilitychange", () => {
-          requestUpdate();
-        }, { once: true });
+        if (document.visibilityState === "visible") due();
+        else document.addEventListener("visibilitychange", due, { once: true });
       }, ms);
+    };
+    let elapsedTickPending = false;
+    const tickElapsed = () => {
+      if (elapsedTickPending) return;
+      elapsedTickPending = true;
+      pollAfter(ELAPSED_TICK_MS, () => {
+        elapsedTickPending = false;
+        requestUpdate();
+      });
     };
     const outputs = new TaskOutputReads((pollAgainInMs) => {
       requestUpdate();
@@ -525,7 +539,10 @@ var plugin = {
             render: (panel) => {
               const view = viewOf(panel);
               const scope = scopeOf(panel);
-              return ui?.renderList === void 0 ? html`<p class="muted">This list needs a newer PI WEB on this device.</p>` : ui.renderList(backgroundListModel(view.tasks, view.read, localClockTime, scope === void 0 ? {} : rowControls(panel, scope)));
+              if (ui?.renderList === void 0) return html`<p class="muted">This list needs a newer PI WEB on this device.</p>`;
+              const tasks = tasksAt(view, Date.now());
+              if (tasks.some((task) => task.status === "running")) tickElapsed();
+              return ui.renderList(backgroundListModel(tasks, view.read, localClockTime, scope === void 0 ? {} : rowControls(panel, scope)));
             }
           }
         ],

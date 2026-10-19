@@ -2,7 +2,7 @@ import type { PiWebPlugin, PluginActivationContext, PluginSessionCommandOutcome,
 import { backgroundRunCountOf, backgroundRunNote } from "./backgroundRunNote.js";
 import { noticeLabel, taskNotice } from "./taskNotice.js";
 import { backgroundListModel, localClockTime, STOP_NOTE_LINE, stopNote, type ListControls, type NoteLine, type StopOutcome, type TaskRow } from "./backgroundTaskRows.js";
-import { outputFrom, TaskOutputReads, TasksReader, type TaskScope, type TasksView } from "./tasksRead.js";
+import { outputFrom, TaskOutputReads, TasksReader, tasksAt, type TaskScope, type TasksView } from "./tasksRead.js";
 import { defineTaskDetailElements, OUTPUT_TAIL_BYTES, taskDetailBody, WHOLE_LOG_BYTES, wholeLogContent, type RowUi } from "./taskDetail.js";
 
 /** The selected session's working directory and transcript; a session with no transcript yet has no scope. */
@@ -21,7 +21,10 @@ function readKeyOf(panel: WorkspacePanelContext): string {
 }
 
 /** A session that has no transcript yet can own no task on disk. */
-const NO_TRANSCRIPT: TasksView = { tasks: [], read: "read" };
+const NO_TRANSCRIPT: TasksView = { tasks: [], read: "read", readAt: 0 };
+
+/** How often a running row's elapsed time moves while the panel is on screen. */
+const ELAPSED_TICK_MS = 1_000;
 
 /** Said on a running row where this PI WEB cannot run the extension's stop command. */
 const STOP_NEEDS_NEWER_HOST: NoteLine = { words: "Stop needs a newer PI WEB on this machine.", tone: "info" };
@@ -64,11 +67,21 @@ const plugin: PiWebPlugin = {
     const wholeLogsReading = new Set<string>();
     const stopAllsInFlight = new Map<string, number>();
     /** An open running row reads again after a poll's wait, but only once this page is visible again. */
-    const pollAfter = (ms: number): void => {
+    const pollAfter = (ms: number, due: () => void = () => { requestUpdate(); }): void => {
       setTimeout(() => {
-        if (document.visibilityState === "visible") requestUpdate();
-        else document.addEventListener("visibilitychange", () => { requestUpdate(); }, { once: true });
+        if (document.visibilityState === "visible") due();
+        else document.addEventListener("visibilitychange", due, { once: true });
       }, ms);
+    };
+    /** One pending tick at a time; the panel's render asks for the next one while it shows a running row. */
+    let elapsedTickPending = false;
+    const tickElapsed = (): void => {
+      if (elapsedTickPending) return;
+      elapsedTickPending = true;
+      pollAfter(ELAPSED_TICK_MS, () => {
+        elapsedTickPending = false;
+        requestUpdate();
+      });
     };
     const outputs = new TaskOutputReads((pollAgainInMs) => {
       requestUpdate();
@@ -198,9 +211,10 @@ const plugin: PiWebPlugin = {
           render: (panel) => {
             const view = viewOf(panel);
             const scope = scopeOf(panel);
-            return ui?.renderList === undefined
-              ? html`<p class="muted">This list needs a newer PI WEB on this device.</p>`
-              : ui.renderList(backgroundListModel(view.tasks, view.read, localClockTime, scope === undefined ? {} : rowControls(panel, scope)));
+            if (ui?.renderList === undefined) return html`<p class="muted">This list needs a newer PI WEB on this device.</p>`;
+            const tasks = tasksAt(view, Date.now());
+            if (tasks.some((task) => task.status === "running")) tickElapsed();
+            return ui.renderList(backgroundListModel(tasks, view.read, localClockTime, scope === undefined ? {} : rowControls(panel, scope)));
           },
         },
       ],

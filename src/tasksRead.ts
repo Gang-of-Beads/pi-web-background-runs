@@ -9,9 +9,22 @@ export interface TaskScope {
 export interface TasksView {
   readonly tasks: readonly TaskInput[];
   readonly read: TasksRead;
+  /** This page's clock when the tasks were read (`Date.now()`). */
+  readonly readAt: number;
 }
 
-const UNREAD: TasksView = { tasks: [], read: "unread" };
+const UNREAD: TasksView = { tasks: [], read: "unread", readAt: 0 };
+
+/**
+ * The tasks as of `now` on this page: a running task's elapsed time advances by the time since the
+ * read, so it moves on screen without another read. It counts on from the machine's own measure from
+ * the task's start, so a page whose clock differs from the machine's still shows the right time.
+ * A finished task keeps its final duration.
+ */
+export function tasksAt(view: TasksView, now: number): readonly TaskInput[] {
+  const sinceRead = Math.max(0, now - view.readAt);
+  return view.tasks.map((task) => task.status === "running" && task.durationMs !== undefined ? { ...task, durationMs: task.durationMs + sinceRead } : task);
+}
 
 /**
  * The panel's read of one session's tasks.
@@ -62,12 +75,12 @@ export class TasksReader {
       (answer) => {
         if (!current()) return;
         const tasks = tasksFrom(answer);
-        this.view = tasks === undefined ? { tasks: this.view.tasks, read: "failed" } : { tasks, read: "read" };
+        this.view = tasks === undefined ? { ...this.view, read: "failed" } : { tasks, read: "read", readAt: Date.now() };
         this.changed();
       },
       () => {
         if (!current()) return;
-        this.view = { tasks: this.view.tasks, read: "failed" };
+        this.view = { ...this.view, read: "failed" };
         this.changed();
       },
     );
