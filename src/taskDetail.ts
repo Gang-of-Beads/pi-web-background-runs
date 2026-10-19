@@ -58,7 +58,7 @@ function defineShell(tag: string, markup: string): void {
 const MISSING_WORDS: Readonly<Record<NonNullable<OutputView["missing"]>, string>> = {
   "no-session": "This session has no transcript yet.",
   "not-owned": "This session did not start this run.",
-  "no-output-file": "The output file is gone.",
+  "no-output-file": "No output file to read.",
 };
 
 function outputWords(running: boolean, output: OutputView): PluginListWords {

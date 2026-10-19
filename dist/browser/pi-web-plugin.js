@@ -312,7 +312,7 @@ function defineShell(tag, markup) {
 var MISSING_WORDS = {
   "no-session": "This session has no transcript yet.",
   "not-owned": "This session did not start this run.",
-  "no-output-file": "The output file is gone."
+  "no-output-file": "No output file to read."
 };
 function outputWords(running, output) {
   return {

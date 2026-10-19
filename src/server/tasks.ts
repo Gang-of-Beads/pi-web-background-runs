@@ -438,7 +438,8 @@ export type TaskOutputRead =
  * Only a task this session owns is read (the ownership `listBackgroundTasks` uses), and only a file
  * under the workspace's registry directory: the path comes from a record on disk, and a record that
  * points elsewhere must not turn this operation into a reader of any file the daemon can open. A cut
- * text starts at a line start, so the first line shown is never half a line.
+ * text starts after the first newline in the tail, so the first line shown is not half a line; a tail
+ * with no newline (one long line) is shown from the cut point.
  */
 export async function readTaskOutput(cwd: string, transcriptPath: string, taskId: string, tailBytes: number): Promise<TaskOutputRead> {
   if (!(await ownedTaskIds(cwd, transcriptPath)).has(taskId)) return { known: false, reason: "not-owned" };
