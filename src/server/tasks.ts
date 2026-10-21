@@ -46,7 +46,7 @@ export interface BackgroundTaskInfo {
   readonly command: string;
   /**
    * The tool's own status, except that a running record whose process is gone or was replaced reads
-   * "lost", and one whose process could not be checked reads "unknown".
+   * "lost", and one whose process could not be checked, or that names no process, reads "unknown".
    */
   readonly status: string;
   readonly startedAt?: string | undefined;
@@ -177,10 +177,13 @@ export function runningRecordStatus(start: ProcessStart, startedAtMs: number | u
   }
 }
 
-/** A running record's status; one with no pid claims no process to check, so it is lost. */
+/**
+ * A running record's status. One with no pid names no process to check, so whether it still runs is
+ * unknown: pi-background-tasks' managed (fusion) runs carry no pid for their whole life.
+ */
 async function probedRunningStatus(task: StoredTask, probeProcessStart: ProbeProcessStart): Promise<RunningRecordStatus> {
   const pid = asNumber(task.pid);
-  if (pid === undefined) return "lost";
+  if (pid === undefined) return "unknown";
   return runningRecordStatus(await probeProcessStart(pid), asNumber(task.startTime));
 }
 
@@ -447,11 +450,13 @@ async function taskIdsInSessionDirectory(cwd: string, sessionId: string | undefi
 export const OUTPUT_READ_LIMIT_BYTES = 1024 * 1024;
 
 export type TaskOutputRead =
-  | { readonly known: true; readonly text: string; readonly totalBytes: number; readonly truncated: boolean }
-  | { readonly known: false; readonly reason: "not-owned" | "no-output-file" };
+  | { readonly known: true; readonly text: string; readonly totalBytes: number; readonly truncated: boolean; readonly command: string }
+  | { readonly known: false; readonly reason: "not-owned" }
+  | { readonly known: false; readonly reason: "no-output-file"; readonly command: string };
 
 /**
- * The end of one task's output file, for its row in the panel.
+ * The end of one task's output file, and the command the task runs ("" when its record names none),
+ * for its row in the panel.
  *
  * Only a task this session owns is read (the ownership `listBackgroundTasks` uses), and only a file
  * under the workspace's registry directory: the path comes from a record on disk, and a record that
@@ -461,12 +466,13 @@ export type TaskOutputRead =
  */
 export async function readTaskOutput(cwd: string, transcriptPath: string, taskId: string, tailBytes: number): Promise<TaskOutputRead> {
   if (!(await ownedTaskIds(cwd, transcriptPath)).has(taskId)) return { known: false, reason: "not-owned" };
-  const outputPath = asString((await readTaskRecords(cwd)).get(taskId)?.task.outputPath);
+  const task = (await readTaskRecords(cwd)).get(taskId)?.task;
+  const outputPath = asString(task?.outputPath);
   const registry = resolve(cwd, TASKS_SUBDIR) + sep;
   const file = outputPath === undefined ? undefined : resolve(cwd, outputPath);
-  if (file?.startsWith(registry) !== true) return { known: false, reason: "no-output-file" };
+  if (file?.startsWith(registry) !== true) return { known: false, reason: "no-output-file", command: asString(task?.command) ?? "" };
   const handle = await open(file, "r").catch(() => undefined);
-  if (handle === undefined) return { known: false, reason: "no-output-file" };
+  if (handle === undefined) return { known: false, reason: "no-output-file", command: asString(task?.command) ?? "" };
   try {
     const totalBytes = (await handle.stat()).size;
     const limit = Math.min(Math.max(1, Math.floor(tailBytes)), OUTPUT_READ_LIMIT_BYTES);
@@ -475,7 +481,7 @@ export async function readTaskOutput(cwd: string, transcriptPath: string, taskId
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
     const read = buffer.subarray(0, bytesRead);
     const lineStart = start === 0 ? 0 : read.indexOf(0x0a) + 1;
-    return { known: true, text: read.toString("utf8", lineStart), totalBytes, truncated: start > 0 || lineStart > 0 };
+    return { known: true, text: read.toString("utf8", lineStart), totalBytes, truncated: start > 0 || lineStart > 0, command: asString(task?.command) ?? "" };
   } finally {
     await handle.close();
   }
@@ -486,7 +492,7 @@ export async function readTaskOutput(cwd: string, transcriptPath: string, taskId
  *
  * A "running" record whose process is gone died without being able to record it (a restart, an
  * OOM kill) and is reported as lost rather than spinning forever; one whose process could not be
- * checked is reported as unknown, neither running nor lost. Only a running record is probed:
+ * checked, or that names none, is reported as unknown, neither running nor lost. Only a running record is probed:
  * spawning `ps` for every finished task ever recorded, on every read, was a process storm for
  * answers that cannot change.
  */

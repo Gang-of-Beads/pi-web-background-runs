@@ -116,6 +116,14 @@ export interface OutputView {
   readonly totalBytes: number;
   readonly truncated: boolean;
   readonly missing?: "no-session" | "not-owned" | "no-output-file";
+  /** The command the task runs; absent when its record names none. */
+  readonly command?: ShownCommand;
+}
+
+/** A task's command as the machine sends it: `cut` when only its first characters came. */
+export interface ShownCommand {
+  readonly text: string;
+  readonly cut: boolean;
 }
 
 const OUTPUT_UNREAD: OutputView = { read: "reading", text: "", totalBytes: 0, truncated: false };
@@ -181,12 +189,12 @@ function outputReadDue(entry: OutputEntry, running: boolean, now: number): boole
 /** The view a `tasks.output` answer gives; undefined when the answer is not one, which is a failed read. */
 export function outputFrom(answer: unknown): OutputView | undefined {
   if (!isRecord(answer)) return undefined;
-  const { known, text, totalBytes, truncated, reason } = answer;
+  const { known, text, totalBytes, truncated, reason, command, commandCut } = answer;
   if (known === true && typeof text === "string" && typeof totalBytes === "number" && typeof truncated === "boolean") {
-    return { read: "ready", text, totalBytes, truncated };
+    return { read: "ready", text, totalBytes, truncated, ...(typeof command === "string" && command !== "" ? { command: { text: command, cut: commandCut === true } } : {}) };
   }
   if (known === false && (reason === "no-session" || reason === "not-owned" || reason === "no-output-file")) {
-    return { read: "failed", text: "", totalBytes: 0, truncated: false, missing: reason };
+    return { read: "failed", text: "", totalBytes: 0, truncated: false, missing: reason, ...(typeof command === "string" && command !== "" ? { command: { text: command, cut: commandCut === true } } : {}) };
   }
   return undefined;
 }

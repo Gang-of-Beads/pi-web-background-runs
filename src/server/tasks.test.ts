@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { listBackgroundTasks, runningTaskIds, taskIdsForSession, type ProcessStart } from "./tasks.js";
+import { listBackgroundTasks, readTaskOutput, runningTaskIds, taskIdsForSession, type ProcessStart } from "./tasks.js";
 import { classifyPsStart, processStartProbe, runningRecordStatus } from "./tasks.js";
 
 /**
@@ -86,10 +86,13 @@ async function transcript(cwd: string): Promise<string> {
 describe("background tasks", () => {
   it("lists only the tasks this session's transcript claims", async () => {
     const cwd = await fixture();
-    const tasks = await listBackgroundTasks(cwd, await transcript(cwd), Date.now(), fakeProbe);
+    const path = await transcript(cwd);
+    const tasks = await listBackgroundTasks(cwd, path, Date.now(), fakeProbe);
 
     // other999 exists in the same directory and belongs to another session.
     expect(tasks.map((task) => task.id).sort()).toEqual(["b25b68e87", "b96da5ec8", "stale111"]);
+    expect(await readTaskOutput(cwd, path, "b25b68e87", 1024)).toEqual({ known: false, reason: "no-output-file", command: "npm test" });
+    expect(await readTaskOutput(cwd, path, "other999", 1024)).toEqual({ known: false, reason: "not-owned" });
   });
 
   it("keeps a task attributed after compaction deletes the transcript lines that proved it", async () => {
@@ -265,7 +268,7 @@ describe("asking ps when a pid's process was born", () => {
     expect(await runningTaskIds(cwd, unreadable)).toEqual(new Set());
   });
 
-  it("lists a running record with no pid as lost: it claims no process to check", async () => {
+  it("lists a running record with no pid as unknown: it names no process to check", async () => {
     const cwd = await fixture();
     const file = join(cwd, ".pi", "tasks", "session-494694-494694", "b96da5ec8.json");
     await writeFile(file, JSON.stringify({
@@ -280,7 +283,7 @@ describe("asking ps when a pid's process was born", () => {
 
     const tasks = await listBackgroundTasks(cwd, await transcript(cwd), Date.now(), fakeProbe);
 
-    expect(tasks.find((task) => task.id === "b96da5ec8")?.status).toBe("lost");
+    expect(tasks.find((task) => task.id === "b96da5ec8")?.status).toBe("unknown");
   });
 });
 

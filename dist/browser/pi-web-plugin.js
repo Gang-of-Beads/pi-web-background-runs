@@ -46,8 +46,12 @@ var STATUS = {
   completed: { tone: "done", label: "done" },
   failed: { tone: "problem", label: "failed" },
   killed: { tone: "problem", label: "stopped" },
-  lost: { tone: "problem", label: "lost" },
+  lost: { tone: "problem", label: "ended \xB7 no exit code" },
   unknown: { tone: "unknown", label: "unknown" }
+};
+var STATUS_EXPLAINED = {
+  lost: "The task's process ended without recording an exit code - the session daemon or the machine restarted, or the system stopped it.",
+  unknown: "Could not tell whether the task is still running."
 };
 var FINISHED_SHOWN = 30;
 function taskPresentation(status) {
@@ -64,7 +68,7 @@ function durationLabel(ms) {
 function row(task) {
   const presentation = taskPresentation(task.status);
   const parts = [durationLabel(task.durationMs), task.exitCode === void 0 ? void 0 : `exit ${String(task.exitCode)}`];
-  return { id: task.id, name: task.name, ...presentation, detail: parts.filter((part) => part !== void 0).join(" \xB7 "), startedAt: task.startedAt, durationMs: task.durationMs, exitCode: task.exitCode };
+  return { id: task.id, name: task.name, ...presentation, detail: parts.filter((part) => part !== void 0).join(" \xB7 "), startedAt: task.startedAt, durationMs: task.durationMs, exitCode: task.exitCode, explain: STATUS_EXPLAINED[task.status] };
 }
 function newestFirst(left, right) {
   return (right.startedAt ?? "").localeCompare(left.startedAt ?? "");
@@ -266,39 +270,189 @@ function outputReadDue(entry, running, now) {
 }
 function outputFrom(answer) {
   if (!isRecord(answer)) return void 0;
-  const { known, text, totalBytes, truncated, reason } = answer;
+  const { known, text, totalBytes, truncated, reason, command, commandCut } = answer;
   if (known === true && typeof text === "string" && typeof totalBytes === "number" && typeof truncated === "boolean") {
-    return { read: "ready", text, totalBytes, truncated };
+    return { read: "ready", text, totalBytes, truncated, ...typeof command === "string" && command !== "" ? { command: { text: command, cut: commandCut === true } } : {} };
   }
   if (known === false && (reason === "no-session" || reason === "not-owned" || reason === "no-output-file")) {
-    return { read: "failed", text: "", totalBytes: 0, truncated: false, missing: reason };
+    return { read: "failed", text: "", totalBytes: 0, truncated: false, missing: reason, ...typeof command === "string" && command !== "" ? { command: { text: command, cut: commandCut === true } } : {} };
   }
   return void 0;
+}
+
+// src/commandLayout.ts
+var STAGE_ENDS = /* @__PURE__ */ new Set(["&&", "||", "|", "|&", ";"]);
+var URL_TEXT = /[\w%.~-]/;
+function commandLayout(command) {
+  const lead = /^ */.exec(command)?.[0] ?? "";
+  const stages = [];
+  let words = [];
+  let quote = "";
+  for (const [, text = "", gap = ""] of command.slice(lead.length).matchAll(/([^ ]+)( *)/g)) {
+    const startedOutside = quote === "";
+    quote = quoteAfter(text, quote);
+    words.push({ pieces: wordPieces(text), gapAfter: gap });
+    if (quote === "" && (startedOutside && STAGE_ENDS.has(text) || text.endsWith(";"))) {
+      stages.push(closeStage(words));
+      words = [];
+    }
+  }
+  if (words.length > 0) stages.push(closeStage(words));
+  return { lead, stages };
+}
+function closeStage(words) {
+  const last = words[words.length - 1];
+  if (last === void 0) return { words, gapAfter: "" };
+  return { words: [...words.slice(0, -1), { pieces: last.pieces, gapAfter: "" }], gapAfter: last.gapAfter };
+}
+function quoteAfter(text, quote) {
+  let open = quote;
+  for (const ch of text) {
+    if (open === "" && (ch === "'" || ch === '"')) open = ch;
+    else if (ch === open) open = "";
+  }
+  return open;
+}
+function wordPieces(word) {
+  const pieces = [];
+  let start = 0;
+  for (let index = 1; index < word.length; index += 1) {
+    if (!breaksBefore(word, index)) continue;
+    pieces.push(word.slice(start, index));
+    start = index;
+  }
+  pieces.push(word.slice(start));
+  return pieces;
+}
+function breaksBefore(word, index) {
+  const before = word.charAt(index - 1);
+  const at = word.charAt(index);
+  if (before === "/") return at !== "/" && index >= 2 && word.charAt(index - 2) !== "/";
+  if (before === "=") return true;
+  return (at === "?" || at === "&") && URL_TEXT.test(before);
 }
 
 // src/taskDetail.ts
 var OUTPUT_TAIL_BYTES = 8 * 1024;
 var WHOLE_LOG_BYTES = 1024 * 1024;
 var TASK_DETAIL_SHELL = `<style>
-  :host { display: flex; flex-direction: column; gap: var(--pi-space-3, 8px); min-width: 0; }
-  ::slotted([slot="note"]) { margin: 0; color: var(--pi-muted); font-size: var(--pi-text-xs); overflow-wrap: anywhere; }
+  :host { display: flex; flex-direction: column; gap: var(--pi-space-3, 6px); min-width: 0; }
+  .band { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--pi-space-4, 8px); margin-top: var(--pi-space-1, 2px); padding-top: var(--pi-space-4, 8px); border-top: 1px solid var(--pi-border-muted); }
+  .say { display: flex; flex-direction: column; gap: var(--pi-space-1, 2px); flex: 1 1 8rem; min-width: 0; }
+  ::slotted([slot="say"]) { margin: 0; color: var(--pi-dim); font-size: var(--pi-text-xs); overflow-wrap: anywhere; }
+  ::slotted([data-tone="info"]) { color: var(--pi-muted); }
   ::slotted([data-tone="warning"]) { color: var(--pi-warning); }
   ::slotted([data-tone="error"]) { color: var(--pi-danger); }
-  ::slotted([slot="actions"]) { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--pi-space-3, 8px); }
-</style><slot name="note"></slot><slot></slot><slot name="actions"></slot>`;
+  ::slotted([slot="actions"]) { display: flex; flex-wrap: wrap; align-items: center; gap: var(--pi-space-4, 8px); }
+</style><slot name="command"></slot><slot></slot><div class="band"><div class="say"><slot name="say"></slot></div><slot name="actions"></slot></div>`;
+var TASK_COMMAND_SHELL = `<style>
+  :host { box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: var(--pi-space-3, 6px); min-width: 0; padding: var(--pi-space-3, 6px); padding-inline-start: var(--pi-space-5, 10px); border: 1px solid var(--pi-border-muted); border-radius: var(--pi-radius-md, 8px); background: var(--pi-surface-canvas); color: var(--pi-text-secondary); font: var(--pi-text-xs) var(--pi-font-mono, monospace); line-height: 1.45; }
+  p { margin: 0; padding-block: var(--pi-space-1, 2px); padding-inline-start: 2ch; max-height: calc(4 * 1.45em); overflow-y: auto; text-indent: -2ch; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .stage, .word, .piece { display: inline-block; max-width: 100%; vertical-align: top; text-indent: 0; }
+  .word, .piece { word-break: break-all; }
+  :host([cut]) .command::after { content: "\u2026"; }
+  .prompt, button, .said { user-select: none; -webkit-user-select: none; }
+  .prompt { color: var(--pi-dim); }
+  button { position: relative; align-self: start; box-sizing: border-box; display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 1px solid var(--pi-border-muted); border-radius: var(--pi-radius-sm, 6px); background: var(--pi-surface); color: var(--pi-muted); line-height: 1; cursor: pointer; }
+  button::after { content: ""; position: absolute; inset: calc(-1 * var(--pi-space-5, 10px)) calc(-1 * var(--pi-space-1, 2px)); }
+  button:focus-visible { outline: var(--pi-focus-ring-width, 2px) solid var(--pi-accent); outline-offset: var(--pi-focus-ring-offset-tight, 1px); }
+  @media (hover: hover) { button:hover { color: var(--pi-text); border-color: var(--pi-accent); } }
+  @media (pointer: coarse) {
+    button::after { inset: calc((22px - var(--pi-control-height-touch, 44px)) / 2 - 1px); inset-inline-start: 0; }
+    button:active { background: var(--pi-surface-hover); }
+  }
+  svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .said { grid-column: 1 / -1; justify-self: end; color: var(--pi-muted); font: var(--pi-text-xs) var(--pi-font-ui, sans-serif); }
+  .said[data-outcome="refused"] { color: var(--pi-danger); }
+</style><p><span class="prompt">$ </span><span class="command"></span></p><button type="button" aria-label="Copy command"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V5a2 2 0 0 1 2-2h8"></path></svg></button><span class="said" role="status"></span>`;
 var WHOLE_LOG_SHELL = `<style>
-  :host { box-sizing: border-box; display: flex; flex-direction: column; gap: var(--pi-space-3, 8px); flex: 1 1 auto; height: 100%; min-height: 0; padding: var(--pi-space-4, 12px) var(--pi-space-5, 16px) max(var(--pi-space-5, 16px), env(safe-area-inset-bottom)); }
-  header { display: flex; align-items: flex-start; gap: var(--pi-space-3, 8px); }
+  :host { box-sizing: border-box; display: flex; flex-direction: column; gap: var(--pi-space-3, 6px); flex: 1 1 auto; height: 100%; min-height: 0; padding: var(--pi-space-4, 8px) var(--pi-space-5, 10px) max(var(--pi-space-5, 10px), env(safe-area-inset-bottom)); }
+  header { display: flex; align-items: flex-start; gap: var(--pi-space-3, 6px); }
   .titles { display: flex; flex-direction: column; gap: var(--pi-space-1, 2px); flex: 1 1 auto; min-width: 0; }
   ::slotted([slot="title"]) { margin: 0; font-size: var(--pi-text-base); font-weight: 600; overflow-wrap: anywhere; }
   ::slotted([slot="cut"]) { margin: 0; color: var(--pi-dim); font-size: var(--pi-text-xs); }
-  ::slotted([slot="close"]) { flex: none; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: var(--pi-radius-md); background: transparent; color: inherit; cursor: pointer; }
-  ::slotted([slot="close"]:focus-visible) { outline: var(--pi-focus-ring-width, 2px) solid var(--pi-accent); }
   .body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 </style><header><div class="titles"><slot name="title"></slot><slot name="cut"></slot></div><slot name="close"></slot></header><div class="body"><slot></slot></div>`;
-function defineTaskDetailElements() {
-  defineShell("bg-task-detail", TASK_DETAIL_SHELL);
+var WHOLE_LOG_CLOSE_STYLES = `
+  .bg-whole-log-close { position: relative; box-sizing: border-box; flex: none; display: inline-grid; place-items: center; width: var(--pi-panel-header-control-height, 36px); height: var(--pi-panel-header-control-height, 36px); padding: 0; border: 1px solid var(--pi-border); border-radius: var(--pi-radius-md, 8px); background: var(--pi-surface); color: var(--pi-text); font: inherit; line-height: 1; cursor: pointer; }
+  .bg-whole-log-close svg { width: 18px; height: 18px; stroke-width: 2; pointer-events: none; }
+  .bg-whole-log-close:focus-visible { outline: var(--pi-focus-ring-width, 2px) solid var(--pi-accent); outline-offset: var(--pi-focus-ring-offset-inset, -2px); }
+  @media (hover: hover) { .bg-whole-log-close:hover { background: var(--pi-surface-hover); } }
+  @media (pointer: coarse) {
+    .bg-whole-log-close::after { content: ""; position: absolute; inset: calc((var(--pi-panel-header-control-height, 36px) - var(--pi-control-height-touch, 44px)) / 2 - 1px); }
+    .bg-whole-log-close:active { background: var(--pi-surface-hover); }
+  }
+`;
+var COPY_SAID = {
+  "copied": () => "Copied",
+  "copied-start": (command) => `Copied the first ${Array.from(command).length.toLocaleString("en-US")} characters`,
+  "refused": () => "Could not copy"
+};
+var COPY_SAID_MS = 2e3;
+function copyOutcome(copied, cut) {
+  if (!copied) return "refused";
+  return cut ? "copied-start" : "copied";
+}
+var writeClipboard = (text) => navigator.clipboard.writeText(text).then(() => true);
+function defineTaskDetailElements(copyText) {
+  const copy = copyText ?? writeClipboard;
+  defineShell("bg-task-detail-2", TASK_DETAIL_SHELL);
   defineShell("bg-whole-log", WHOLE_LOG_SHELL);
+  if (customElements.get("bg-task-command") !== void 0) return;
+  customElements.define("bg-task-command", class extends HTMLElement {
+    static observedAttributes = ["command"];
+    root = this.attachShadow({ mode: "open" });
+    saidTimer;
+    constructor() {
+      super();
+      this.root.innerHTML = TASK_COMMAND_SHELL;
+      this.root.querySelector("button")?.addEventListener("click", () => {
+        this.copy();
+      });
+      this.root.querySelector("p")?.addEventListener("click", (event) => {
+        this.selectCommandOnTripleClick(event);
+      });
+    }
+    attributeChangedCallback() {
+      this.root.querySelector(".command")?.replaceChildren(...commandNodes(this.getAttribute("command") ?? ""));
+    }
+    selectCommandOnTripleClick(event) {
+      const command = this.root.querySelector(".command");
+      if (event.detail < 3 || command === null) return;
+      getSelection()?.selectAllChildren(command);
+    }
+    copy() {
+      const command = this.getAttribute("command") ?? "";
+      const cut = this.hasAttribute("cut");
+      void Promise.resolve().then(() => copy(command)).then((copied) => copyOutcome(copied, cut), () => "refused").then((outcome) => {
+        this.say(outcome, command);
+      });
+    }
+    say(outcome, command) {
+      const said = this.root.querySelector(".said");
+      if (said === null) return;
+      said.dataset["outcome"] = outcome;
+      said.textContent = COPY_SAID[outcome](command);
+      clearTimeout(this.saidTimer);
+      this.saidTimer = setTimeout(() => {
+        said.textContent = "";
+      }, COPY_SAID_MS);
+    }
+  });
+}
+function span(className, children) {
+  const element = document.createElement("span");
+  element.className = className;
+  element.append(...children.filter((child) => child !== ""));
+  return element;
+}
+function wordNodes(word) {
+  const text = word.pieces.length > 1 ? word.pieces.map((piece) => span("piece", [piece])) : word.pieces;
+  return [span("word", text), word.gapAfter];
+}
+function commandNodes(command) {
+  const layout = commandLayout(command);
+  return [layout.lead, ...layout.stages.flatMap((stage) => [span("stage", stage.words.flatMap(wordNodes)), stage.gapAfter])].filter((node) => node !== "");
 }
 function defineShell(tag, markup) {
   if (customElements.get(tag) !== void 0) return;
@@ -325,23 +479,32 @@ function outputWords(running, output) {
 function cutWords(output, limitBytes) {
   return output.truncated ? `Showing the last ${byteSize(limitBytes)} of ${byteSize(output.totalBytes)}` : void 0;
 }
+function exitNote(exitCode) {
+  return exitCode === void 0 ? void 0 : { words: `Exited with code ${String(exitCode)}.`, tone: exitCode === 0 ? "info" : "error" };
+}
 function taskDetailBody(html, ui, detail) {
-  const cutAbove = cutWords(detail.output, OUTPUT_TAIL_BYTES);
-  return html`<bg-task-detail>
-    ${detail.note === void 0 ? "" : html`<p slot="note" data-tone=${detail.note.tone}>${detail.note.words}</p>`}
-    ${ui.renderOutput({ label: `Output of ${detail.name}`, read: detail.output.read, text: detail.output.text, words: outputWords(detail.running, detail.output), ...cutAbove === void 0 ? {} : { cutAbove } })}
+  const explained = detail.explain === void 0 ? void 0 : { words: detail.explain, tone: "info" };
+  const notes = [detail.note, explained, exitNote(detail.exitCode)].filter((note) => note !== void 0);
+  const cut = cutWords(detail.output, OUTPUT_TAIL_BYTES);
+  const command = detail.output.command;
+  return html`<bg-task-detail-2>
+    ${command === void 0 ? "" : html`<bg-task-command slot="command" command=${command.text} ?cut=${command.cut}></bg-task-command>`}
+    ${ui.renderOutput({ label: `Output of ${detail.name}`, read: detail.output.read, text: detail.output.text, words: outputWords(detail.running, detail.output) })}
+    ${notes.map((note) => html`<p slot="say" data-tone=${note.tone}>${note.words}</p>`)}
+    ${cut === void 0 ? "" : html`<p slot="say">${cut}</p>`}
     <div slot="actions">
       ${ui.renderButton({ label: "Whole log", busy: detail.wholeLog.busy, run: detail.wholeLog.open })}
       ${detail.stop === void 0 ? "" : ui.renderButton({ label: "Stop", tone: "danger", busy: detail.stop.busy, run: detail.stop.run })}
     </div>
-  </bg-task-detail>`;
+  </bg-task-detail-2>`;
 }
 function wholeLogContent(html, ui, log) {
   const cut = cutWords(log.output, WHOLE_LOG_BYTES);
   return html`<bg-whole-log>
     <h2 slot="title">${log.name}</h2>
     ${cut === void 0 ? "" : html`<p slot="cut">${cut}</p>`}
-    <button slot="close" type="button" aria-label="Close" @click=${log.close}>${log.closeIcon ?? "Close"}</button>
+    <style>${WHOLE_LOG_CLOSE_STYLES}</style>
+    <button slot="close" class="bg-whole-log-close" type="button" aria-label="Close" @click=${log.close}>${log.closeIcon ?? "Close"}</button>
     ${ui.renderOutput({ label: `Whole log of ${log.name}`, read: log.output.read, text: log.output.text, words: outputWords(log.running, log.output), size: "fill" })}
   </bg-whole-log>`;
 }
@@ -413,7 +576,7 @@ var plugin = {
       requestUpdate();
       if (pollAgainInMs !== void 0) pollAfter(pollAgainInMs);
     });
-    if (ui?.renderOutput !== void 0) defineTaskDetailElements();
+    if (ui?.renderOutput !== void 0) defineTaskDetailElements(ui.copyText);
     const rowControls = (panel, scope) => {
       const renderOutput = ui?.renderOutput;
       const renderButton = ui?.renderButton;
@@ -481,6 +644,8 @@ var plugin = {
               return taskDetailBody(html, rowUi, {
                 name: row2.name,
                 running,
+                exitCode: row2.exitCode,
+                explain: row2.explain,
                 output: outputs.view(key),
                 note: noteOf(row2, key),
                 wholeLog: { busy: wholeLogsReading.has(key), open: () => {

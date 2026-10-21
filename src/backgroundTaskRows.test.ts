@@ -9,7 +9,7 @@ describe("taskPresentation", () => {
     completed: ["done", "done"],
     failed: ["problem", "failed"],
     killed: ["problem", "stopped"],
-    lost: ["problem", "lost"],
+    lost: ["problem", "ended · no exit code"],
     unknown: ["unknown", "unknown"],
   };
   for (const [status, [tone, label]] of Object.entries(expected)) {
@@ -75,7 +75,7 @@ describe("backgroundListModel", () => {
       { id: "finished", heading: "Finished", rows: [
         { id: "ok", title: "task ok", value: "exit 0", detail: "08:38 · 1m 4s" },
         { id: "bad", title: "task bad", status: { label: "exit 1", tone: "problem" }, detail: "08:35 · 48s" },
-        { id: "gone", title: "task gone", status: { label: "lost", tone: "problem" }, detail: "08:30" },
+        { id: "gone", title: "task gone", status: { label: "ended · no exit code", tone: "problem" }, detail: "08:30" },
         { id: "odd", title: "task odd", status: { label: "timeout", tone: "neutral" }, detail: "08:20" },
       ] },
     ]);

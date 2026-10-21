@@ -48,7 +48,7 @@ function runningRecordStatus(start, startedAtMs) {
 }
 async function probedRunningStatus(task, probeProcessStart) {
   const pid = asNumber(task.pid);
-  if (pid === void 0) return "lost";
+  if (pid === void 0) return "unknown";
   return runningRecordStatus(await probeProcessStart(pid), asNumber(task.startTime));
 }
 async function taskIdsForSession(transcriptPath) {
@@ -212,12 +212,13 @@ async function taskIdsInSessionDirectory(cwd, sessionId) {
 var OUTPUT_READ_LIMIT_BYTES = 1024 * 1024;
 async function readTaskOutput(cwd, transcriptPath, taskId, tailBytes) {
   if (!(await ownedTaskIds(cwd, transcriptPath)).has(taskId)) return { known: false, reason: "not-owned" };
-  const outputPath = asString((await readTaskRecords(cwd)).get(taskId)?.task.outputPath);
+  const task = (await readTaskRecords(cwd)).get(taskId)?.task;
+  const outputPath = asString(task?.outputPath);
   const registry = resolve(cwd, TASKS_SUBDIR) + sep;
   const file = outputPath === void 0 ? void 0 : resolve(cwd, outputPath);
-  if (file?.startsWith(registry) !== true) return { known: false, reason: "no-output-file" };
+  if (file?.startsWith(registry) !== true) return { known: false, reason: "no-output-file", command: asString(task?.command) ?? "" };
   const handle = await open(file, "r").catch(() => void 0);
-  if (handle === void 0) return { known: false, reason: "no-output-file" };
+  if (handle === void 0) return { known: false, reason: "no-output-file", command: asString(task?.command) ?? "" };
   try {
     const totalBytes = (await handle.stat()).size;
     const limit = Math.min(Math.max(1, Math.floor(tailBytes)), OUTPUT_READ_LIMIT_BYTES);
@@ -226,7 +227,7 @@ async function readTaskOutput(cwd, transcriptPath, taskId, tailBytes) {
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
     const read = buffer.subarray(0, bytesRead);
     const lineStart = start === 0 ? 0 : read.indexOf(10) + 1;
-    return { known: true, text: read.toString("utf8", lineStart), totalBytes, truncated: start > 0 || lineStart > 0 };
+    return { known: true, text: read.toString("utf8", lineStart), totalBytes, truncated: start > 0 || lineStart > 0, command: asString(task?.command) ?? "" };
   } finally {
     await handle.close();
   }
@@ -276,6 +277,13 @@ function tailBytesFrom(input) {
   const tailBytes = typeof input === "object" && input !== null ? Reflect.get(input, "tailBytes") : void 0;
   return typeof tailBytes === "number" && Number.isFinite(tailBytes) && tailBytes > 0 ? tailBytes : OUTPUT_READ_LIMIT_BYTES;
 }
+var COMMAND_SHOWN_CHARS = 4096;
+function commandAsJson(command) {
+  if (command === "") return {};
+  if (command.length <= COMMAND_SHOWN_CHARS) return { command };
+  const characters = Array.from(command);
+  return characters.length <= COMMAND_SHOWN_CHARS ? { command } : { command: characters.slice(0, COMMAND_SHOWN_CHARS).join(""), commandCut: true };
+}
 function tasksAsJson(tasks) {
   return tasks.map((task) => ({
     id: task.id,
@@ -285,6 +293,10 @@ function tasksAsJson(tasks) {
     ...task.durationMs === void 0 ? {} : { durationMs: task.durationMs },
     ...task.exitCode === void 0 ? {} : { exitCode: task.exitCode }
   }));
+}
+function outputAsJson(read) {
+  if (!read.known) return read.reason === "no-output-file" ? { known: false, reason: read.reason, ...commandAsJson(read.command) } : { known: false, reason: read.reason };
+  return { known: true, text: read.text, totalBytes: read.totalBytes, truncated: read.truncated, ...commandAsJson(read.command) };
 }
 function probeWith(context, signal) {
   return processStartProbe((args, env) => context.execFile({ file: "ps", args, env, signal }));
@@ -308,7 +320,7 @@ var plugin = {
         if (session === void 0) return { known: false, reason: "no-session" };
         const taskId = taskIdFrom(input);
         if (taskId === void 0) return { known: false, reason: "not-owned" };
-        return { ...await readTaskOutput(session.cwd, session.sessionFile, taskId, tailBytesFrom(input)) };
+        return outputAsJson(await readTaskOutput(session.cwd, session.sessionFile, taskId, tailBytesFrom(input)));
       }
     }
   })

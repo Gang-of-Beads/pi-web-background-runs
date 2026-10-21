@@ -87,7 +87,7 @@ const plugin: PiWebPlugin = {
       requestUpdate();
       if (pollAgainInMs !== undefined) pollAfter(pollAgainInMs);
     });
-    if (ui?.renderOutput !== undefined) defineTaskDetailElements();
+    if (ui?.renderOutput !== undefined) defineTaskDetailElements(ui.copyText);
 
     const rowControls = (panel: WorkspacePanelContext, scope: TaskScope): ListControls => {
       const renderOutput = ui?.renderOutput;
@@ -157,6 +157,8 @@ const plugin: PiWebPlugin = {
               return taskDetailBody(html, rowUi, {
                 name: row.name,
                 running,
+                exitCode: row.exitCode,
+                explain: row.explain,
                 output: outputs.view(key),
                 note: noteOf(row, key),
                 wholeLog: { busy: wholeLogsReading.has(key), open: () => { if (!wholeLogsReading.has(key)) openWholeLog(row, key); } },

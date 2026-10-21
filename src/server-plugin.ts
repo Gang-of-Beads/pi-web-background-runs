@@ -1,6 +1,6 @@
 import type { JsonValue, PiWebServerPlugin, ServerPluginActivationContext } from "@gang-of-beads/pi-web-plugin-api/server-plugin-api";
 import { isAbsolute } from "node:path";
-import { listBackgroundTasks, OUTPUT_READ_LIMIT_BYTES, processStartProbe, readTaskOutput, runningTasksForSession, type BackgroundTaskInfo, type ProbeProcessStart } from "./server/tasks.js";
+import { listBackgroundTasks, OUTPUT_READ_LIMIT_BYTES, processStartProbe, readTaskOutput, runningTasksForSession, type BackgroundTaskInfo, type ProbeProcessStart, type TaskOutputRead } from "./server/tasks.js";
 
 /**
  * Background runs' server half: everything PI WEB knows about pi-background-tasks (`bg_run`)
@@ -35,7 +35,18 @@ function tailBytesFrom(input: unknown): number {
   return typeof tailBytes === "number" && Number.isFinite(tailBytes) && tailBytes > 0 ? tailBytes : OUTPUT_READ_LIMIT_BYTES;
 }
 
-/** What the panel draws of each task, and nothing more: a command line can be long. */
+/** The longest command an open row shows, in characters (code points); an open running row reads every two seconds. */
+const COMMAND_SHOWN_CHARS = 4096;
+
+/** A task's command for its open row, cut on a character boundary; a cut one says so rather than carrying a mark in the text. */
+function commandAsJson(command: string): { command?: string; commandCut?: true } {
+  if (command === "") return {};
+  if (command.length <= COMMAND_SHOWN_CHARS) return { command };
+  const characters = Array.from(command);
+  return characters.length <= COMMAND_SHOWN_CHARS ? { command } : { command: characters.slice(0, COMMAND_SHOWN_CHARS).join(""), commandCut: true };
+}
+
+/** What the panel draws of each task, and nothing more: a command line can be long, so it rides the open row's output read. */
 function tasksAsJson(tasks: readonly BackgroundTaskInfo[]): JsonValue {
   return tasks.map((task) => ({
     id: task.id,
@@ -45,6 +56,11 @@ function tasksAsJson(tasks: readonly BackgroundTaskInfo[]): JsonValue {
     ...(task.durationMs === undefined ? {} : { durationMs: task.durationMs }),
     ...(task.exitCode === undefined ? {} : { exitCode: task.exitCode }),
   }));
+}
+
+function outputAsJson(read: TaskOutputRead): JsonValue {
+  if (!read.known) return read.reason === "no-output-file" ? { known: false, reason: read.reason, ...commandAsJson(read.command) } : { known: false, reason: read.reason };
+  return { known: true, text: read.text, totalBytes: read.totalBytes, truncated: read.truncated, ...commandAsJson(read.command) };
 }
 
 /** When a pid's process was born, read with `ps` through the host's bounded command helper. */
@@ -71,7 +87,7 @@ const plugin: PiWebServerPlugin = {
         if (session === undefined) return { known: false, reason: "no-session" };
         const taskId = taskIdFrom(input);
         if (taskId === undefined) return { known: false, reason: "not-owned" };
-        return { ...(await readTaskOutput(session.cwd, session.sessionFile, taskId, tailBytesFrom(input))) };
+        return outputAsJson(await readTaskOutput(session.cwd, session.sessionFile, taskId, tailBytesFrom(input)));
       },
     },
   }),

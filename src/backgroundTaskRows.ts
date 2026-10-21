@@ -32,6 +32,8 @@ export interface TaskRow {
   readonly startedAt?: string | undefined;
   readonly durationMs?: number | undefined;
   readonly exitCode?: number | undefined;
+  /** What a settled but uncertain status means, said when the row is opened; absent for the others. */
+  readonly explain?: string | undefined;
 }
 
 export interface TaskList {
@@ -45,8 +47,17 @@ const STATUS: Record<string, { tone: TaskTone; label: string }> = {
   completed: { tone: "done", label: "done" },
   failed: { tone: "problem", label: "failed" },
   killed: { tone: "problem", label: "stopped" },
-  lost: { tone: "problem", label: "lost" },
+  lost: { tone: "problem", label: "ended · no exit code" },
   unknown: { tone: "unknown", label: "unknown" },
+};
+
+/**
+ * The words "lost" and "unknown" left the reader asking what happened (owner, 2026-10-21). The status
+ * values stay (they are the server's protocol); an opened row says what each one means.
+ */
+const STATUS_EXPLAINED: Readonly<Record<string, string>> = {
+  lost: "The task's process ended without recording an exit code - the session daemon or the machine restarted, or the system stopped it.",
+  unknown: "Could not tell whether the task is still running.",
 };
 
 export const FINISHED_SHOWN = 30;
@@ -67,7 +78,7 @@ export function durationLabel(ms: number | undefined): string | undefined {
 function row(task: TaskInput): TaskRow {
   const presentation = taskPresentation(task.status);
   const parts = [durationLabel(task.durationMs), task.exitCode === undefined ? undefined : `exit ${String(task.exitCode)}`];
-  return { id: task.id, name: task.name, ...presentation, detail: parts.filter((part) => part !== undefined).join(" · "), startedAt: task.startedAt, durationMs: task.durationMs, exitCode: task.exitCode };
+  return { id: task.id, name: task.name, ...presentation, detail: parts.filter((part) => part !== undefined).join(" · "), startedAt: task.startedAt, durationMs: task.durationMs, exitCode: task.exitCode, explain: STATUS_EXPLAINED[task.status] };
 }
 
 function newestFirst(left: TaskInput, right: TaskInput): number {
