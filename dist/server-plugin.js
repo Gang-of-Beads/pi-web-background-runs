@@ -3,7 +3,7 @@ import { isAbsolute } from "node:path";
 
 // src/server/tasks.ts
 import { open, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 var TASKS_SUBDIR = ".pi/tasks";
 async function runningTasksForSession(cwd, transcriptPath, probeProcessStart) {
   const running = await runningTaskIds(cwd, probeProcessStart);
@@ -180,7 +180,7 @@ async function runningTaskIds(cwd, probeProcessStart) {
   return running;
 }
 async function ownedTaskIds(cwd, transcriptPath) {
-  const ids = await taskIdsForSession(transcriptPath);
+  const ids = /* @__PURE__ */ new Set([...await taskIdsForSession(transcriptPath), ...await taskIdsInSessionDirectory(cwd, transcriptSessionId(transcriptPath))]);
   const session = basename(transcriptPath);
   const attributions = await readAttributions(cwd);
   let recorded = false;
@@ -197,6 +197,17 @@ async function ownedTaskIds(cwd, transcriptPath) {
     else owned.delete(id);
   }
   return owned;
+}
+function transcriptSessionId(transcriptPath) {
+  return /_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/u.exec(basename(transcriptPath))?.[1];
+}
+async function taskIdsInSessionDirectory(cwd, sessionId) {
+  const ids = /* @__PURE__ */ new Set();
+  if (sessionId === void 0) return ids;
+  for (const [id, record] of await readTaskRecords(cwd)) {
+    if (basename(dirname(record.file)).startsWith(`${sessionId}-`)) ids.add(id);
+  }
+  return ids;
 }
 var OUTPUT_READ_LIMIT_BYTES = 1024 * 1024;
 async function readTaskOutput(cwd, transcriptPath, taskId, tailBytes) {

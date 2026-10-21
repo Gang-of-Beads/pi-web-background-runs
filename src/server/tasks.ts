@@ -1,5 +1,5 @@
 import { open, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 
 /**
  * Background-task runs, read from the registry the task tool leaves on disk.
@@ -13,16 +13,19 @@ import { basename, join, resolve, sep } from "node:path";
  *
  *   <cwd>/.pi/tasks/<sessionId ?? "session-<pid>">-<pid>/<taskId>.json
  *
- * and nothing ever supplies that sessionId (BackgroundTaskContext declares it
- * optional and every construction site omits it), so the name collapses to the
- * pid of the *server* process. One PI WEB server hosts every session, so all
- * sessions share one directory and the records carry no session field. Reading
- * that directory alone would show every session the same list.
+ * and older versions of the tool never supplied that sessionId, so the name
+ * collapsed to the pid of the *server* process. One PI WEB server hosts every
+ * session, so all sessions shared one directory and the records carry no
+ * session field. Reading that directory alone would show every session the
+ * same list.
  *
  * So the directory supplies the state and the transcript supplies the
  * ownership: a task belongs to the session whose transcript mentions its
  * output path, which the tool writes into its own result when the task starts.
  * That is exact, survives a restart, and needs no cooperation from the tool.
+ * Newer versions of the tool do name the directory after the session, and a
+ * task started from its slash command leaves no output path in the transcript,
+ * so a directory named after the session proves ownership too.
  *
  * But the transcript's proof is perishable: compaction rewrites the session
  * file and the Output lines are exactly what it deletes, so a task that ran
@@ -406,7 +409,7 @@ export async function runningTaskIds(
  * claim a task it did not start, and the record outvotes a quoted mention.
  */
 async function ownedTaskIds(cwd: string, transcriptPath: string): Promise<Set<string>> {
-  const ids = await taskIdsForSession(transcriptPath);
+  const ids = new Set([...await taskIdsForSession(transcriptPath), ...await taskIdsInSessionDirectory(cwd, transcriptSessionId(transcriptPath))]);
   const session = basename(transcriptPath);
   const attributions = await readAttributions(cwd);
   let recorded = false;
@@ -423,6 +426,21 @@ async function ownedTaskIds(cwd: string, transcriptPath: string): Promise<Set<st
     else owned.delete(id);
   }
   return owned;
+}
+
+/** The session id a pi transcript is named after: `<timestamp>_<sessionId>.jsonl`. */
+function transcriptSessionId(transcriptPath: string): string | undefined {
+  return /_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/u.exec(basename(transcriptPath))?.[1];
+}
+
+/** Task ids whose registry directory the tool named after this session (`<sessionId>-<pid>`). */
+async function taskIdsInSessionDirectory(cwd: string, sessionId: string | undefined): Promise<Set<string>> {
+  const ids = new Set<string>();
+  if (sessionId === undefined) return ids;
+  for (const [id, record] of await readTaskRecords(cwd)) {
+    if (basename(dirname(record.file)).startsWith(`${sessionId}-`)) ids.add(id);
+  }
+  return ids;
 }
 
 /** The most a read of a task's output answers: the panel's Whole log (design-b3s3-v2 §4.4). */
