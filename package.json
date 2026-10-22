@@ -1,6 +1,6 @@
 {
   "name": "@gang-of-beads/pi-web-background-runs",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "PI WEB plugin for pi-background-tasks: a Background tab listing the session's tasks, a running count in the activity line, and task-ended notices in the conversation.",
   "license": "MIT",
   "type": "module",
