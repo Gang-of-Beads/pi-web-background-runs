@@ -229,9 +229,10 @@ describe("whether a running record's pid is still the task's own process", () =>
 });
 
 /**
- * `ps -o lstart=` needed the boot time: under ar_AE.UTF-8 it printed "خ أكت 15 14:37:18 2026" (issue #1),
- * and on Android, where an app cannot read the boot time, "Thu Jan  8 10:23:40 1970" for a process
- * started a minute before. Both listed every live task as lost. The elapsed time is digits everywhere.
+ * `ps -o lstart=` printed LC_TIME's weekday and month names, "خ أكت 15 14:37:18 2026" under ar_AE.UTF-8
+ * (issue #1), and it needs the boot time, which Android does not let an app read, so Termux printed
+ * "Thu Jan  8 10:23:40 1970" for a process started a minute before. Both listed every live task as
+ * lost. The elapsed time is digits everywhere and needs no boot time.
  */
 describe("asking ps when a pid's process was born", () => {
   const NOW = Date.parse("2026-10-29T08:49:00Z");

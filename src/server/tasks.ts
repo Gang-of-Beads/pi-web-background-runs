@@ -154,8 +154,9 @@ export function classifyPsStart(exitCode: number | null, stdout: string, nowMs: 
 export function processStartProbe(runPs: RunPs, now: () => number = Date.now): ProbeProcessStart {
   return async (pid) => {
     try {
+      const askedAt = now();
       const { exitCode, stdout } = await runPs(["-p", String(pid), "-o", "etime="], {});
-      return classifyPsStart(exitCode, stdout, now());
+      return classifyPsStart(exitCode, stdout, askedAt);
     } catch {
       return { kind: "unreadable" };
     }

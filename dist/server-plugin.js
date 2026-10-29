@@ -34,8 +34,9 @@ function classifyPsStart(exitCode, stdout, nowMs) {
 function processStartProbe(runPs, now = Date.now) {
   return async (pid) => {
     try {
+      const askedAt = now();
       const { exitCode, stdout } = await runPs(["-p", String(pid), "-o", "etime="], {});
-      return classifyPsStart(exitCode, stdout, now());
+      return classifyPsStart(exitCode, stdout, askedAt);
     } catch {
       return { kind: "unreadable" };
     }
