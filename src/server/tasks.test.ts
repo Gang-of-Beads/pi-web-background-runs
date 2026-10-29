@@ -229,31 +229,36 @@ describe("whether a running record's pid is still the task's own process", () =>
 });
 
 /**
- * `ps -o lstart=` prints LC_TIME's weekday and month names. Under ar_AE.UTF-8 it printed
- * "خ أكت 15 14:37:18 2026", `Date` read NaN, and every live task was listed as lost (issue #1).
+ * `ps -o lstart=` needed the boot time: under ar_AE.UTF-8 it printed "خ أكت 15 14:37:18 2026" (issue #1),
+ * and on Android, where an app cannot read the boot time, "Thu Jan  8 10:23:40 1970" for a process
+ * started a minute before. Both listed every live task as lost. The elapsed time is digits everywhere.
  */
 describe("asking ps when a pid's process was born", () => {
-  it("runs ps in the C locale so the start time is English whatever LC_TIME says", async () => {
+  const NOW = Date.parse("2026-10-29T08:49:00Z");
+
+  it("counts back from how long the process has run, as procps and BSD ps print it", async () => {
     const calls: { args: readonly string[]; env: Readonly<Record<string, string>> }[] = [];
     const probe = processStartProbe((args, env) => {
       calls.push({ args, env });
-      return Promise.resolve({ exitCode: 0, stdout: "Thu Oct 15 14:37:18 2026\n" });
-    });
+      return Promise.resolve({ exitCode: 0, stdout: "   2-03:04:05\n" });
+    }, () => NOW);
 
-    expect(await probe(4242)).toEqual({ kind: "born", atMs: new Date("Thu Oct 15 14:37:18 2026").getTime() });
-    expect(calls).toEqual([{ args: ["-p", "4242", "-o", "lstart="], env: { LC_ALL: "C" } }]);
+    expect(await probe(4242)).toEqual({ kind: "born", atMs: NOW - (((2 * 24 + 3) * 60 + 4) * 60 + 5) * 1000 });
+    expect(calls).toEqual([{ args: ["-p", "4242", "-o", "etime="], env: {} }]);
+    expect(classifyPsStart(0, "      00:24\n", NOW)).toEqual({ kind: "born", atMs: NOW - 24_000 });
   });
 
-  it("reads a localized start time as unreadable, not as a dead process", () => {
-    expect(classifyPsStart(0, "خ أكت 15 14:37:18 2026")).toEqual({ kind: "unreadable" });
+  it("reads anything but an elapsed time as unreadable, not as a dead process", () => {
+    expect(classifyPsStart(0, "Thu Jan  8 10:23:40 1970", NOW)).toEqual({ kind: "unreadable" });
+    expect(classifyPsStart(0, "خ أكت 15 14:37:18 2026", NOW)).toEqual({ kind: "unreadable" });
   });
 
   it("reads a non-zero exit as no such process", () => {
-    expect(classifyPsStart(1, "")).toEqual({ kind: "gone" });
+    expect(classifyPsStart(1, "", NOW)).toEqual({ kind: "gone" });
   });
 
   it("reads no exit code, or a ps that could not run, as unreadable", async () => {
-    expect(classifyPsStart(null, "")).toEqual({ kind: "unreadable" });
+    expect(classifyPsStart(null, "", NOW)).toEqual({ kind: "unreadable" });
     expect(await processStartProbe(() => Promise.reject(new Error("spawn ps ENOENT")))(4242)).toEqual({ kind: "unreadable" });
   });
 

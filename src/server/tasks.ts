@@ -115,21 +115,32 @@ export type ProcessStart =
 export type ProbeProcessStart = (pid: number) => Promise<ProcessStart>;
 
 /**
- * `ps -o lstart=` prints weekday and month names in the LC_TIME locale, and `Date` parses only the
- * English ones: under ar_AE every live task read as dead. The C locale makes the output parseable on
- * both procps (Linux) and BSD `ps` (macOS), which `etimes` would not, being procps-only.
+ * How long a process has run, as `ps -o etime=` prints it: `[[dd-]hh:]mm:ss`, digits on procps
+ * (Linux, Termux) and BSD `ps` (macOS) alike, under every locale.
+ *
+ * The start time used to be read from `lstart`, which needs the machine's boot time. Android does not
+ * let an app read `/proc/stat`, so Termux's procps counted from 1970 and printed every process as born
+ * in January 1970: every task still running on a phone read as ended with no exit code, and the
+ * Background count left it out (2026-10-29). Elapsed time needs no boot time.
  */
-const PS_ENV: Readonly<Record<string, string>> = { LC_ALL: "C" };
+const ELAPSED = /^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$/u;
+
+function elapsedSeconds(text: string): number | undefined {
+  const match = ELAPSED.exec(text);
+  if (match === null) return undefined;
+  const [, days = "0", hours = "0", minutes = "0", seconds = "0"] = match;
+  return ((Number(days) * 24 + Number(hours)) * 60 + Number(minutes)) * 60 + Number(seconds);
+}
 
 /**
  * One `ps` answer, classified. A non-zero exit is how `ps -p` says the pid has no process; no exit
- * code (killed, timed out) or an exit 0 whose start time does not parse answered nothing.
+ * code (killed, timed out) or an exit 0 whose elapsed time does not parse answered nothing.
  */
-export function classifyPsStart(exitCode: number | null, stdout: string): ProcessStart {
+export function classifyPsStart(exitCode: number | null, stdout: string, nowMs: number): ProcessStart {
   if (exitCode === null) return { kind: "unreadable" };
   if (exitCode !== 0) return { kind: "gone" };
-  const atMs = new Date(stdout.trim()).getTime();
-  return Number.isFinite(atMs) ? { kind: "born", atMs } : { kind: "unreadable" };
+  const seconds = elapsedSeconds(stdout.trim());
+  return seconds === undefined ? { kind: "unreadable" } : { kind: "born", atMs: nowMs - seconds * 1000 };
 }
 
 /**
@@ -140,11 +151,11 @@ export function classifyPsStart(exitCode: number | null, stdout: string): Proces
  * runs to correct it. Reporting that as running would show a spinner for a task that died days ago,
  * so a running record is only believed while its process exists.
  */
-export function processStartProbe(runPs: RunPs): ProbeProcessStart {
+export function processStartProbe(runPs: RunPs, now: () => number = Date.now): ProbeProcessStart {
   return async (pid) => {
     try {
-      const { exitCode, stdout } = await runPs(["-p", String(pid), "-o", "lstart="], PS_ENV);
-      return classifyPsStart(exitCode, stdout);
+      const { exitCode, stdout } = await runPs(["-p", String(pid), "-o", "etime="], {});
+      return classifyPsStart(exitCode, stdout, now());
     } catch {
       return { kind: "unreadable" };
     }

@@ -18,18 +18,24 @@ function asNumber(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : void 0;
 }
 var PID_REUSE_TOLERANCE_MS = 6e4;
-var PS_ENV = { LC_ALL: "C" };
-function classifyPsStart(exitCode, stdout) {
+var ELAPSED = /^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$/u;
+function elapsedSeconds(text) {
+  const match = ELAPSED.exec(text);
+  if (match === null) return void 0;
+  const [, days = "0", hours = "0", minutes = "0", seconds = "0"] = match;
+  return ((Number(days) * 24 + Number(hours)) * 60 + Number(minutes)) * 60 + Number(seconds);
+}
+function classifyPsStart(exitCode, stdout, nowMs) {
   if (exitCode === null) return { kind: "unreadable" };
   if (exitCode !== 0) return { kind: "gone" };
-  const atMs = new Date(stdout.trim()).getTime();
-  return Number.isFinite(atMs) ? { kind: "born", atMs } : { kind: "unreadable" };
+  const seconds = elapsedSeconds(stdout.trim());
+  return seconds === void 0 ? { kind: "unreadable" } : { kind: "born", atMs: nowMs - seconds * 1e3 };
 }
-function processStartProbe(runPs) {
+function processStartProbe(runPs, now = Date.now) {
   return async (pid) => {
     try {
-      const { exitCode, stdout } = await runPs(["-p", String(pid), "-o", "lstart="], PS_ENV);
-      return classifyPsStart(exitCode, stdout);
+      const { exitCode, stdout } = await runPs(["-p", String(pid), "-o", "etime="], {});
+      return classifyPsStart(exitCode, stdout, now());
     } catch {
       return { kind: "unreadable" };
     }
