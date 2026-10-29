@@ -35,7 +35,7 @@ function processStartProbe(runPs, now = Date.now) {
   return async (pid) => {
     try {
       const askedAt = now();
-      const { exitCode, stdout } = await runPs(["-p", String(pid), "-o", "etime="], {});
+      const { exitCode, stdout } = await runPs(["-p", String(pid), "-o", "etime="]);
       return classifyPsStart(exitCode, stdout, askedAt);
     } catch {
       return { kind: "unreadable" };
@@ -306,7 +306,7 @@ function outputAsJson(read) {
   return { known: true, text: read.text, totalBytes: read.totalBytes, truncated: read.truncated, ...commandAsJson(read.command) };
 }
 function probeWith(context, signal) {
-  return processStartProbe((args, env) => context.execFile({ file: "ps", args, env, signal }));
+  return processStartProbe((args) => context.execFile({ file: "ps", args, signal }));
 }
 var plugin = {
   apiVersion: 1,

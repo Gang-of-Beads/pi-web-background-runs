@@ -238,14 +238,14 @@ describe("asking ps when a pid's process was born", () => {
   const NOW = Date.parse("2026-10-29T08:49:00Z");
 
   it("counts back from how long the process has run, as procps and BSD ps print it", async () => {
-    const calls: { args: readonly string[]; env: Readonly<Record<string, string>> }[] = [];
-    const probe = processStartProbe((args, env) => {
-      calls.push({ args, env });
+    const calls: { args: readonly string[] }[] = [];
+    const probe = processStartProbe((args) => {
+      calls.push({ args });
       return Promise.resolve({ exitCode: 0, stdout: "   2-03:04:05\n" });
     }, () => NOW);
 
     expect(await probe(4242)).toEqual({ kind: "born", atMs: NOW - (((2 * 24 + 3) * 60 + 4) * 60 + 5) * 1000 });
-    expect(calls).toEqual([{ args: ["-p", "4242", "-o", "etime="], env: {} }]);
+    expect(calls).toEqual([{ args: ["-p", "4242", "-o", "etime="] }]);
     expect(classifyPsStart(0, "      00:24\n", NOW)).toEqual({ kind: "born", atMs: NOW - 24_000 });
   });
 

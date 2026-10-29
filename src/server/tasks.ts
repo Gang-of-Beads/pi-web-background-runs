@@ -94,12 +94,11 @@ function asNumber(value: unknown): number | undefined {
 const PID_REUSE_TOLERANCE_MS = 60_000;
 
 /**
- * Runs `ps` with these arguments and environment overrides: the host's bounded command helper, so
+ * Runs `ps` with these arguments: the host's bounded command helper, so
  * the plugin spawns nothing itself.
  */
 export type RunPs = (
   args: readonly string[],
-  env: Readonly<Record<string, string>>,
 ) => Promise<{ readonly exitCode: number | null; readonly stdout: string }>;
 
 /**
@@ -155,7 +154,7 @@ export function processStartProbe(runPs: RunPs, now: () => number = Date.now): P
   return async (pid) => {
     try {
       const askedAt = now();
-      const { exitCode, stdout } = await runPs(["-p", String(pid), "-o", "etime="], {});
+      const { exitCode, stdout } = await runPs(["-p", String(pid), "-o", "etime="]);
       return classifyPsStart(exitCode, stdout, askedAt);
     } catch {
       return { kind: "unreadable" };

@@ -65,7 +65,7 @@ function outputAsJson(read: TaskOutputRead): JsonValue {
 
 /** When a pid's process was born, read with `ps` through the host's bounded command helper. */
 function probeWith(context: ServerPluginActivationContext, signal: AbortSignal): ProbeProcessStart {
-  return processStartProbe((args, env) => context.execFile({ file: "ps", args, env, signal }));
+  return processStartProbe((args) => context.execFile({ file: "ps", args, signal }));
 }
 
 const plugin: PiWebServerPlugin = {
