@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4
+
+- A task still running on Android (Termux) is no longer listed under Finished as "ended · no exit code", and the Background count includes it again. The plugin checks a running task by its process's age, read with `ps -o etime=`, instead of its start time, read with `lstart`. On Android procps cannot read the boot time, so it printed every process as born in January 1970 and every live task read as ended. The elapsed time needs neither the boot time nor the C locale that 0.1.2 set for `lstart`.
+- Restart the session daemon after updating: the plugin's server half runs there.
+
 ## 0.1.3
 
 - A Background row opens: it shows the command the task actually ran, in a mono box with a copy key, then the end of its output with **Whole log** and **Stop**. Long commands wrap between words (a pipeline stage moves whole to the next line), a triple-click selects exactly the command, and a command over 4,096 characters is cut on a character boundary and says so when copied.
