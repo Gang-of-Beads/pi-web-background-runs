@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5
+
+- Require plugin API alpha.10; a host without `session.runCommand` hides Stop instead of failing on the type.
+- Ship the BSD-3 notice for the Lit the browser bundle inlines.
+
 ## 0.1.4
 
 - A task still running on Android (Termux) is no longer listed under Finished as "ended · no exit code", and the Background count includes it again. The plugin checks a running task by its process's age, read with `ps -o etime=`, instead of its start time, read with `lstart`. On Android procps cannot read the boot time, so it printed every process as born in January 1970 and every live task read as ended. The elapsed time needs neither the boot time nor the C locale that 0.1.2 set for `lstart`.
