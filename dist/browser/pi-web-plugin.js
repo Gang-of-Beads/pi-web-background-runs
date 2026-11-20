@@ -588,11 +588,12 @@ var plugin = {
       const readOutput = (taskId, tailBytes) => callOperation("tasks.output", { cwd: scope.cwd, sessionFile: scope.sessionFile, taskId, tailBytes });
       const stopPending = (key) => stops.has(key) && stops.get(key) === void 0;
       const session = panel.session;
-      const stop = session === void 0 ? void 0 : (row2) => {
+      const runCommand = session?.runCommand;
+      const stop = session === void 0 || runCommand === void 0 ? void 0 : (row2) => {
         const key = keyOf(row2.id);
         stops.set(key, void 0);
         requestUpdate();
-        return session.runCommand({ sessionId: session.id, name: "kill", args: row2.id }).catch(() => LOST_ANSWER).then((outcome) => {
+        return runCommand({ sessionId: session.id, name: "kill", args: row2.id }).catch(() => LOST_ANSWER).then((outcome) => {
           stops.set(key, outcome);
           reader.forget();
           requestUpdate();

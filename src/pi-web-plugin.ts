@@ -101,11 +101,12 @@ const plugin: PiWebPlugin = {
         callOperation("tasks.output", { cwd: scope.cwd, sessionFile: scope.sessionFile, taskId, tailBytes });
       const stopPending = (key: string): boolean => stops.has(key) && stops.get(key) === undefined;
       const session = panel.session;
-      const stop = session === undefined ? undefined : (row: TaskRow): Promise<void> => {
+      const runCommand = session?.runCommand;
+      const stop = session === undefined || runCommand === undefined ? undefined : (row: TaskRow): Promise<void> => {
         const key = keyOf(row.id);
         stops.set(key, undefined);
         requestUpdate();
-        return session.runCommand({ sessionId: session.id, name: "kill", args: row.id })
+        return runCommand({ sessionId: session.id, name: "kill", args: row.id })
           .catch(() => LOST_ANSWER)
           .then((outcome) => {
             stops.set(key, outcome);
