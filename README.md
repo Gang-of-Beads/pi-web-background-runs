@@ -13,7 +13,7 @@ The extension is not copied here. It is a dependency, loaded as it loads itself,
 
 - PI WEB 2.202610.5 or later. Earlier releases bundle their own copy of this plugin, which wins over an installed one (Settings → PI WEB plugins reports the duplicate id).
 - Rows that open need a PI WEB whose plugin API has `ui.renderOutput` (plugin API 0.1.0-alpha.6); older releases show the rows without opening them. Without the extension bus, Stop and Stop all also need a PI WEB that lets a plugin run the session commands it declares; without it an open running row says "Stop needs a newer PI WEB on this machine."
-- **Do not also install `pi-background-tasks` on its own.** This package loads it; with two copies pi reports `Tool "bg_run" conflicts with …` and the background tools do not work. If it is in your pi settings from before 0.2.0, remove it: `pi remove npm:pi-background-tasks`. Its own update notice suggests `pi install npm:pi-background-tasks@latest`; update this package instead.
+- **Do not also install `pi-background-tasks` on its own.** This package loads it, and two copies in one session take each other's tools. When pi's settings still list the separate one, this package leaves the tools to it and every session start warns you to remove it. If it is in your pi settings from before 0.2.0, remove it: `pi remove npm:pi-background-tasks`. Its own update notice suggests `pi install npm:pi-background-tasks@latest`; update this package instead.
 - With a PI WEB that has the extension bus (after 2.202611.10) the page reads its tasks from the extension; on older releases it reads the task records, as before 0.2.0.
 
 ## Install

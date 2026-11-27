@@ -2,7 +2,7 @@
 
 ## 0.2.0
 
-- One install: the package now loads pi-background-tasks itself, as a dependency. **Remove a separately installed copy** (`pi remove npm:pi-background-tasks`): with both, pi reports tool conflicts and the background tools do not work. The dependency is pinned to an exact version (2.6.10), so a newer pi-background-tasks arrives with a release of this package.
+- One install: the package now loads pi-background-tasks itself, as a dependency. **Remove a separately installed copy** (`pi remove npm:pi-background-tasks`). Until you do, the package leaves the tools to that copy, so nothing breaks, and each session start warns you to remove it. The dependency is pinned to an exact version (2.6.10), so a newer pi-background-tasks arrives with a release of this package.
 - With a PI WEB that has the extension bus (after 2.202611.10), the Background page takes the state of the session's tasks from the extension, through pi-background-tasks' own host interface, laid over the server part's read of the task records; an open row's command and output come the same way. Tasks the extension does not publish (from before the session's runtime last started, or older than its newest 50) are shown from their records as before.
 - Stop goes through that interface too. It stops exactly the task the row names and says why when it cannot, where `/kill` answered "Unknown background task ID" for a task its registry no longer knew.
 - A running Fusion run is counted in "N background runs" and listed as running. It names no process of its own, so it used to read "unknown" and was left out of the count; it is now checked by the pi process that runs it.
