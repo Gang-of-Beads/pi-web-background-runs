@@ -10,14 +10,12 @@ import { tasksFrom, type TasksView } from "./tasksRead.js";
  * nothing (an older PI WEB, a session whose runtime is not open, a pi-background-tasks installed on
  * its own without this package's bridge) the state is unknown, and the page falls back to the
  * server half's read of the task records.
- *
- * shortcut: a running task's elapsed time is this device's clock against the machine's start time, so
- * the two clocks' difference shows in it; upgrade by publishing the machine's clock when that matters.
  */
 
 export const TASKS_CHANNEL = "background-runs:tasks";
 export const STOP_CHANNEL = "background-runs:stop";
 export const OUTPUT_CHANNEL = "background-runs:output";
+export const CLOCK_CHANNEL = "background-runs:clock";
 
 type BusState = { readonly known: false } | { readonly known: true; readonly value: unknown };
 
@@ -46,11 +44,30 @@ export function sessionBusOf(session: unknown): SessionBus | undefined {
  */
 export class PublishedTasks {
   private held: { key: string; json: string; tasks: readonly TaskInput[] } | undefined;
+  /** How far the machine's clock is ahead of this device's, asked once a session; 0 until it answers. */
+  private clock: { key: string; aheadMs: number } | undefined;
+
+  constructor(private readonly changed: () => void = () => undefined) {}
+
+  private aheadMs(key: string, bus: SessionBus): number {
+    if (this.clock?.key === key) return this.clock.aheadMs;
+    const asked = { key, aheadMs: 0 };
+    this.clock = asked;
+    const sentAt = Date.now();
+    bus.request(CLOCK_CHANNEL).then((answer) => {
+      const machineNow: unknown = isRecord(answer) ? answer["now"] : undefined;
+      if (typeof machineNow !== "number") return;
+      const receivedAt = Date.now();
+      asked.aheadMs = machineNow - (sentAt + receivedAt) / 2;
+      this.changed();
+    }, () => undefined);
+    return 0;
+  }
 
   /** The view for a session, or undefined when its extension published nothing this page can read. */
   viewFor(key: string, bus: SessionBus | undefined, now: number): TasksView | undefined {
     const state = bus?.state(TASKS_CHANNEL);
-    if (state === undefined || !state.known) return undefined;
+    if (bus === undefined || state === undefined || !state.known) return undefined;
     /** The extension lists its newest 50. Past that a long-running task would drop off the list unseen, and the task records hold every one. */
     if (isRecord(state.value) && state.value["more"] === true) return undefined;
     const json = JSON.stringify(state.value);
@@ -59,14 +76,15 @@ export class PublishedTasks {
       if (tasks === undefined) return undefined;
       this.held = { key, json, tasks };
     }
-    return { tasks: this.held.tasks.map((task) => runningSince(task, now)), read: "read", readAt: now };
+    const machineNow = now + this.aheadMs(key, bus);
+    return { tasks: this.held.tasks.map((task) => runningSince(task, machineNow)), read: "read", readAt: now };
   }
 }
 
 /**
- * A running task's elapsed time on this page's clock. The published duration was measured when the
- * extension last read its tasks, which may be long before this page read the value, so it cannot be
- * counted on from; the start time can, at the cost of the two clocks' difference.
+ * A running task's elapsed time. The published duration was measured when the extension last read
+ * its tasks, which may be long before this page read the value, so it cannot be counted on from;
+ * the start time can, against the machine's clock.
  */
 function runningSince(task: TaskInput, now: number): TaskInput {
   const startedAt = task.status === "running" && task.startedAt !== undefined ? Date.parse(task.startedAt) : Number.NaN;
@@ -81,7 +99,7 @@ export function outputAnswer(result: unknown): unknown {
 /** A request that may have been carried out with its answer lost: only the list says whether the task stopped. */
 function answerLost(error: unknown): boolean {
   const code: unknown = isRecord(error) ? error["code"] : undefined;
-  return code === "timeout" || code === "unreachable" || (error instanceof Error && error.message.startsWith("NO_ANSWER"));
+  return code === "timeout" || code === "unreachable" || code === "session-changed" || (error instanceof Error && error.message.startsWith("NO_ANSWER"));
 }
 
 /** What a stop through the bus came to, in the words a session command's outcome uses, so the row says it the same way. */

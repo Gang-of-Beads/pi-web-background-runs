@@ -284,6 +284,7 @@ function outputFrom(answer) {
 var TASKS_CHANNEL = "background-runs:tasks";
 var STOP_CHANNEL = "background-runs:stop";
 var OUTPUT_CHANNEL = "background-runs:output";
+var CLOCK_CHANNEL = "background-runs:clock";
 function isRecord2(value) {
   return typeof value === "object" && value !== null;
 }
@@ -295,11 +296,31 @@ function sessionBusOf(session) {
   return isSessionBus(bus) ? bus : void 0;
 }
 var PublishedTasks = class {
+  constructor(changed = () => void 0) {
+    this.changed = changed;
+  }
+  changed;
   held;
+  /** How far the machine's clock is ahead of this device's, asked once a session; 0 until it answers. */
+  clock;
+  aheadMs(key, bus) {
+    if (this.clock?.key === key) return this.clock.aheadMs;
+    const asked = { key, aheadMs: 0 };
+    this.clock = asked;
+    const sentAt = Date.now();
+    bus.request(CLOCK_CHANNEL).then((answer) => {
+      const machineNow = isRecord2(answer) ? answer["now"] : void 0;
+      if (typeof machineNow !== "number") return;
+      const receivedAt = Date.now();
+      asked.aheadMs = machineNow - (sentAt + receivedAt) / 2;
+      this.changed();
+    }, () => void 0);
+    return 0;
+  }
   /** The view for a session, or undefined when its extension published nothing this page can read. */
   viewFor(key, bus, now) {
     const state = bus?.state(TASKS_CHANNEL);
-    if (state === void 0 || !state.known) return void 0;
+    if (bus === void 0 || state === void 0 || !state.known) return void 0;
     if (isRecord2(state.value) && state.value["more"] === true) return void 0;
     const json = JSON.stringify(state.value);
     if (this.held?.key !== key || this.held.json !== json) {
@@ -307,7 +328,8 @@ var PublishedTasks = class {
       if (tasks === void 0) return void 0;
       this.held = { key, json, tasks };
     }
-    return { tasks: this.held.tasks.map((task) => runningSince(task, now)), read: "read", readAt: now };
+    const machineNow = now + this.aheadMs(key, bus);
+    return { tasks: this.held.tasks.map((task) => runningSince(task, machineNow)), read: "read", readAt: now };
   }
 };
 function runningSince(task, now) {
@@ -319,7 +341,7 @@ function outputAnswer(result) {
 }
 function answerLost(error) {
   const code = isRecord2(error) ? error["code"] : void 0;
-  return code === "timeout" || code === "unreachable" || error instanceof Error && error.message.startsWith("NO_ANSWER");
+  return code === "timeout" || code === "unreachable" || code === "session-changed" || error instanceof Error && error.message.startsWith("NO_ANSWER");
 }
 function stopOutcome(settled) {
   if (!("error" in settled)) return { kind: "ran", notices: [{ level: "info", message: "Stopped" }] };
@@ -590,7 +612,9 @@ var plugin = {
       reader.forget();
       requestUpdate();
     });
-    const published = new PublishedTasks();
+    const published = new PublishedTasks(() => {
+      requestUpdate();
+    });
     const publishingBus = (panel) => {
       const session = panel.session;
       const bus = sessionBusOf(session);

@@ -112,7 +112,19 @@ var STOP_CHANNEL = "background-runs:stop";
 var OUTPUT_CHANNEL = "background-runs:output";
 var LISTED = 50;
 var OUTPUT_BYTES = 8192;
-var COMMAND_CHARS = 2e3;
+var ANSWER_JSON_BYTES = 6e4;
+var CLOCK_CHANNEL = "background-runs:clock";
+var SESSION_STATES_CHANNEL = "piweb:states:background-runs";
+function fitted(answer) {
+  let text = answer.text;
+  while (text !== "" && Buffer.byteLength(JSON.stringify({ ...answer, text })) > ANSWER_JSON_BYTES) text = text.slice(Math.ceil(text.length / 4));
+  return text === answer.text ? answer : { ...answer, text, truncated: true };
+}
+function uncheckedRunsState(views) {
+  const count = views.filter((view) => isRecord2(view) && isRecord2(view["task"]) && view["task"]["status"] === "running" && typeof view["task"]["pid"] !== "number").length;
+  return count === 0 ? [] : [{ id: "unchecked-runs", label: count === 1 ? "1 managed run" : `${String(count)} managed runs`, tone: "accent", busy: true, count }];
+}
+var COMMAND_CHARS = 4096;
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -162,7 +174,9 @@ function startWebBridge(events, now = Date.now) {
         const task = publishedTask(view, at);
         return task === void 0 ? [] : [task];
       });
-      if (!stopped) events.emit(TASKS_CHANNEL, { tasks, more: isRecord2(listed) && typeof listed["nextCursor"] === "string" });
+      if (stopped) return;
+      events.emit(SESSION_STATES_CHANNEL, uncheckedRunsState(views));
+      events.emit(TASKS_CHANNEL, { tasks, more: isRecord2(listed) && typeof listed["nextCursor"] === "string" });
     } catch {
     } finally {
       reading = false;
@@ -202,13 +216,18 @@ function startWebBridge(events, now = Date.now) {
       const logs = await host.logs(taskId, tailBytesOf(input));
       const task = isRecord2(logs) && isRecord2(logs["task"]) ? logs["task"] : {};
       const command = typeof task["command"] === "string" ? task["command"] : "";
-      return {
+      return fitted({
         text: isRecord2(logs) && typeof logs["text"] === "string" ? logs["text"] : "",
         totalBytes: isRecord2(logs) && typeof logs["totalBytes"] === "number" ? logs["totalBytes"] : 0,
         truncated: isRecord2(logs) && logs["truncated"] === true,
         command: command.slice(0, COMMAND_CHARS),
         commandCut: command.length > COMMAND_CHARS
-      };
+      });
+    }),
+    /** The machine's clock, so a page on another device counts a running task's time on it. */
+    events.on(`${CLOCK_CHANNEL}:request`, (data) => {
+      const request = busRequest(data);
+      if (request !== void 0) events.emit(`${CLOCK_CHANNEL}:response`, { id: request.id, result: { now: now() } });
     })
   ];
   return {

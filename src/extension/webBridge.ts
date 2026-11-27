@@ -20,13 +20,30 @@ export const STOP_CHANNEL = "background-runs:stop";
 export const OUTPUT_CHANNEL = "background-runs:output";
 
 const LISTED = 50;
-/**
- * The most output one answer carries. PI WEB's bus takes 64 KiB a value, measured as JSON, where a
- * control byte of coloured output costs six: 8 KiB of output and 2,000 characters of command fit at
- * their worst.
- */
+/** The most output one answer asks the task service for. */
 const OUTPUT_BYTES = 8_192;
-const COMMAND_CHARS = 2_000;
+/** PI WEB's bus takes 64 KiB a value, measured as JSON, where a control byte of coloured output costs six. */
+const ANSWER_JSON_BYTES = 60_000;
+export const CLOCK_CHANNEL = "background-runs:clock";
+export const SESSION_STATES_CHANNEL = "piweb:states:background-runs";
+
+/** An output answer that fits the bus: the oldest output goes first, and the answer says it was cut. */
+function fitted<T extends { readonly text: string }>(answer: T): T {
+  let text = answer.text;
+  while (text !== "" && Buffer.byteLength(JSON.stringify({ ...answer, text })) > ANSWER_JSON_BYTES) text = text.slice(Math.ceil(text.length / 4));
+  return text === answer.text ? answer : { ...answer, text, truncated: true };
+}
+
+/**
+ * The session state for the running tasks that name no process (fusion and managed runs). PI WEB's
+ * server half counts running tasks by checking their process, so it cannot count these; while the
+ * session's runtime is open the extension says them itself.
+ */
+export function uncheckedRunsState(views: readonly unknown[]): readonly Record<string, unknown>[] {
+  const count = views.filter((view) => isRecord(view) && isRecord(view["task"]) && view["task"]["status"] === "running" && typeof view["task"]["pid"] !== "number").length;
+  return count === 0 ? [] : [{ id: "unchecked-runs", label: count === 1 ? "1 managed run" : `${String(count)} managed runs`, tone: "accent", busy: true, count }];
+}
+const COMMAND_CHARS = 4_096;
 
 /** A task as the page draws it; `durationMs` is measured on this machine when the list was read. */
 export interface PublishedTask {
@@ -97,7 +114,9 @@ export function startWebBridge(events: PiEvents, now: () => number = Date.now): 
       const views = isRecord(listed) && Array.isArray(listed["tasks"]) ? listed["tasks"] : [];
       const at = now();
       const tasks = views.flatMap((view: unknown) => { const task = publishedTask(view, at); return task === undefined ? [] : [task]; });
-      if (!stopped) events.emit(TASKS_CHANNEL, { tasks, more: isRecord(listed) && typeof listed["nextCursor"] === "string" });
+      if (stopped) return;
+      events.emit(SESSION_STATES_CHANNEL, uncheckedRunsState(views));
+      events.emit(TASKS_CHANNEL, { tasks, more: isRecord(listed) && typeof listed["nextCursor"] === "string" });
     } catch {
       // No answer is not "no tasks": what was published stays, and the next change reads again.
     } finally {
@@ -122,13 +141,18 @@ export function startWebBridge(events: PiEvents, now: () => number = Date.now): 
       const logs = await host.logs(taskId, tailBytesOf(input));
       const task = isRecord(logs) && isRecord(logs["task"]) ? logs["task"] : {};
       const command = typeof task["command"] === "string" ? task["command"] : "";
-      return {
+      return fitted({
         text: isRecord(logs) && typeof logs["text"] === "string" ? logs["text"] : "",
         totalBytes: isRecord(logs) && typeof logs["totalBytes"] === "number" ? logs["totalBytes"] : 0,
         truncated: isRecord(logs) && logs["truncated"] === true,
         command: command.slice(0, COMMAND_CHARS),
         commandCut: command.length > COMMAND_CHARS,
-      };
+      });
+    }),
+    /** The machine's clock, so a page on another device counts a running task's time on it. */
+    events.on(`${CLOCK_CHANNEL}:request`, (data) => {
+      const request = busRequest(data);
+      if (request !== undefined) events.emit(`${CLOCK_CHANNEL}:response`, { id: request.id, result: { now: now() } });
     }),
   ];
 

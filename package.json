@@ -51,6 +51,12 @@
       },
       "background-runs:output": {
         "kind": "request"
+      },
+      "background-runs:clock": {
+        "kind": "request"
+      },
+      "piweb:states:background-runs": {
+        "kind": "state"
       }
     }
   },
@@ -68,7 +74,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
-    "pi-background-tasks": "^2.6.10"
+    "pi-background-tasks": "2.6.10"
   },
   "pi": {
     "extensions": [

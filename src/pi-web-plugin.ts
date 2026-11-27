@@ -48,7 +48,7 @@ const plugin: PiWebPlugin = {
       reader.forget();
       requestUpdate();
     });
-    const published = new PublishedTasks();
+    const published = new PublishedTasks(() => { requestUpdate(); });
     /** The bus of the session on screen while its extension publishes its tasks there; the task records are read otherwise. */
     const publishingBus = (panel: WorkspacePanelContext): SessionBus | undefined => {
       const session = panel.session;

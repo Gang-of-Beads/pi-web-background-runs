@@ -30,9 +30,10 @@ describe("the page's read of the extension bus", () => {
   });
 
   it("says a stop and an output read in the words the rows already use", () => {
-    expect([stopOutcome({}), stopOutcome({ error: new Error("NOT_FOUND: no such task") }), outputAnswer({ text: "a", totalBytes: 1, truncated: false }), outputAnswer("x")]).toEqual([
+    expect([stopOutcome({}), stopOutcome({ error: new Error("NOT_FOUND: no such task") }), stopOutcome({ error: Object.assign(new Error("late"), { code: "timeout" }) }), outputAnswer({ text: "a", totalBytes: 1, truncated: false }), outputAnswer("x")]).toEqual([
       { kind: "ran", notices: [{ level: "info", message: "Stopped" }] },
       { kind: "ran", notices: [{ level: "error", message: "NOT_FOUND: no such task" }] },
+      { kind: "unknown", words: "" },
       { known: true, text: "a", totalBytes: 1, truncated: false },
       undefined,
     ]);
