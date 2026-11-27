@@ -330,6 +330,12 @@ var PublishedTasks = class {
     const machineNow = now + this.aheadMs(key, bus);
     return { tasks: this.held.tasks.map((task) => runningSince(task, machineNow)), read: "read", readAt: now };
   }
+  /** What the extension asks the reader to do about its installation, if anything. */
+  notice(key, bus) {
+    const state = this.held?.key === key ? bus?.state(TASKS_CHANNEL) : void 0;
+    const words = state?.known === true && isRecord2(state.value) ? state.value["notice"] : void 0;
+    return typeof words === "string" ? words : void 0;
+  }
   /** Whether the extension published this task for this session: only such a task can be asked of it. */
   knows(key, taskId) {
     return this.held?.key === key && this.held.tasks.some((task) => task.id === taskId);
@@ -810,7 +816,9 @@ var plugin = {
               if (ui?.renderList === void 0) return html`<p class="muted">This list needs a newer PI WEB on this device.</p>`;
               const tasks = tasksAt(view, Date.now());
               if (tasks.some((task) => task.status === "running")) tickElapsed();
-              return ui.renderList(backgroundListModel(tasks, view.read, localClockTime, scope === void 0 ? {} : rowControls(panel, scope)));
+              const notice = published.notice(busKeyOf(panel), sessionBusOf(panel.session));
+              const list = ui.renderList(backgroundListModel(tasks, view.read, localClockTime, scope === void 0 ? {} : rowControls(panel, scope)));
+              return notice === void 0 ? list : html`<p class="muted" role="status">${notice}</p>${list}`;
             }
           }
         ],

@@ -88,7 +88,7 @@ export interface WebBridge {
   stop(): void;
 }
 
-export function startWebBridge(events: PiEvents, now: () => number = Date.now): WebBridge {
+export function startWebBridge(events: PiEvents, now: () => number = Date.now, notice?: string): WebBridge {
   const host = new BackgroundTaskHostClient(events, "pi-web-background-runs");
   let reading = false;
   let again = false;
@@ -104,7 +104,7 @@ export function startWebBridge(events: PiEvents, now: () => number = Date.now): 
       const at = now();
       const tasks = views.flatMap((view: unknown) => { const task = publishedTask(view, at); return task === undefined ? [] : [task]; });
       if (stopped) return;
-      events.emit(TASKS_CHANNEL, { tasks, more: isRecord(listed) && typeof listed["nextCursor"] === "string" });
+      events.emit(TASKS_CHANNEL, { tasks, more: isRecord(listed) && typeof listed["nextCursor"] === "string", ...(notice === undefined ? {} : { notice }) });
     } catch {
       // No answer is not "no tasks": what was published stays, and the next change reads again.
     } finally {

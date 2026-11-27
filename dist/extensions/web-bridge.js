@@ -1,3 +1,31 @@
+// src/extension/separateInstall.ts
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+var SEPARATE_INSTALL_WORDS = "pi-background-tasks is installed on its own as well as through pi-web-background-runs, which brings it. Remove the separate one: pi remove npm:pi-background-tasks";
+function sourceOf(entry) {
+  if (typeof entry === "string") return entry;
+  const source = typeof entry === "object" && entry !== null ? Reflect.get(entry, "source") : void 0;
+  return typeof source === "string" ? source : void 0;
+}
+function namesBackgroundTasks(source) {
+  return /(^|[:/\\])pi-background-tasks(\.git)?(@[^/\\]*)?[/\\]?$/.test(source);
+}
+function packagesIn(settingsFile) {
+  try {
+    const packages = Reflect.get(JSON.parse(readFileSync(settingsFile, "utf8")), "packages");
+    return Array.isArray(packages) ? packages : [];
+  } catch {
+    return [];
+  }
+}
+function separateInstall(cwd = process.cwd(), agentDir = process.env["PI_CODING_AGENT_DIR"] ?? join(homedir(), ".pi", "agent")) {
+  return [join(agentDir, "settings.json"), join(cwd, ".pi", "settings.json")].flatMap(packagesIn).some((entry) => {
+    const source = sourceOf(entry);
+    return source !== void 0 && namesBackgroundTasks(source);
+  });
+}
+
 // src/extension/hostClient.ts
 var HOST_REQUEST_CHANNEL = "pi-background-tasks:host:request:v1";
 var HOST_RESPONSE_CHANNEL = "pi-background-tasks:host:response:v1";
@@ -149,7 +177,7 @@ function taskIdOf(input) {
   const id = isRecord2(input) ? input["id"] : void 0;
   return typeof id === "string" && id !== "" ? id : void 0;
 }
-function startWebBridge(events, now = Date.now) {
+function startWebBridge(events, now = Date.now, notice) {
   const host = new BackgroundTaskHostClient(events, "pi-web-background-runs");
   let reading = false;
   let again = false;
@@ -170,7 +198,7 @@ function startWebBridge(events, now = Date.now) {
         return task === void 0 ? [] : [task];
       });
       if (stopped) return;
-      events.emit(TASKS_CHANNEL, { tasks, more: isRecord2(listed) && typeof listed["nextCursor"] === "string" });
+      events.emit(TASKS_CHANNEL, { tasks, more: isRecord2(listed) && typeof listed["nextCursor"] === "string", ...notice === void 0 ? {} : { notice } });
     } catch {
     } finally {
       reading = false;
@@ -239,7 +267,7 @@ function startWebBridge(events, now = Date.now) {
 function webBridgeExtension(pi) {
   let bridge;
   pi.on("session_start", () => {
-    bridge ??= startWebBridge(pi.events);
+    bridge ??= startWebBridge(pi.events, void 0, separateInstall() ? SEPARATE_INSTALL_WORDS : void 0);
     bridge.refresh();
   });
   pi.on("session_shutdown", () => {

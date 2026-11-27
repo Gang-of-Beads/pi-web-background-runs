@@ -79,6 +79,13 @@ export class PublishedTasks {
     return { tasks: this.held.tasks.map((task) => runningSince(task, machineNow)), read: "read", readAt: now };
   }
 
+  /** What the extension asks the reader to do about its installation, if anything. */
+  notice(key: string, bus: SessionBus | undefined): string | undefined {
+    const state = this.held?.key === key ? bus?.state(TASKS_CHANNEL) : undefined;
+    const words: unknown = state?.known === true && isRecord(state.value) ? state.value["notice"] : undefined;
+    return typeof words === "string" ? words : undefined;
+  }
+
   /** Whether the extension published this task for this session: only such a task can be asked of it. */
   knows(key: string, taskId: string): boolean {
     return this.held?.key === key && this.held.tasks.some((task) => task.id === taskId);

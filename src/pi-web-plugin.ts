@@ -242,7 +242,9 @@ const plugin: PiWebPlugin = {
             if (ui?.renderList === undefined) return html`<p class="muted">This list needs a newer PI WEB on this device.</p>`;
             const tasks = tasksAt(view, Date.now());
             if (tasks.some((task) => task.status === "running")) tickElapsed();
-            return ui.renderList(backgroundListModel(tasks, view.read, localClockTime, scope === undefined ? {} : rowControls(panel, scope)));
+            const notice = published.notice(busKeyOf(panel), sessionBusOf(panel.session));
+            const list = ui.renderList(backgroundListModel(tasks, view.read, localClockTime, scope === undefined ? {} : rowControls(panel, scope)));
+            return notice === undefined ? list : html`<p class="muted" role="status">${notice}</p>${list}`;
           },
         },
       ],
