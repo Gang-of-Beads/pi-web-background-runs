@@ -10,9 +10,8 @@ import { BackgroundTaskHostClient, HostRefusal, type PiEvents } from "./hostClie
  * `background-runs:stop` and `background-runs:output` requests through that interface. In the
  * terminal nobody listens, and each publish is one no-op emit.
  *
- * It does not publish the session's "N background runs" state: a task can outlive the session's
- * runtime, where no extension is left to say so, and the plugin's server half counts those from the
- * task records.
+ * It does not publish the session's "N background runs" state: the plugin's server half counts the
+ * running tasks from their records, for every session and not only the one on screen.
  */
 
 export const TASKS_CHANNEL = "background-runs:tasks";
@@ -25,7 +24,6 @@ const OUTPUT_BYTES = 8_192;
 /** PI WEB's bus takes 64 KiB a value, measured as JSON, where a control byte of coloured output costs six. */
 const ANSWER_JSON_BYTES = 60_000;
 export const CLOCK_CHANNEL = "background-runs:clock";
-export const SESSION_STATES_CHANNEL = "piweb:states:background-runs";
 
 /** An output answer that fits the bus: the oldest output goes first, and the answer says it was cut. */
 function fitted<T extends { readonly text: string }>(answer: T): T {
@@ -34,15 +32,6 @@ function fitted<T extends { readonly text: string }>(answer: T): T {
   return text === answer.text ? answer : { ...answer, text, truncated: true };
 }
 
-/**
- * The session state for the running tasks that name no process (fusion and managed runs). PI WEB's
- * server half counts running tasks by checking their process, so it cannot count these; while the
- * session's runtime is open the extension says them itself.
- */
-export function uncheckedRunsState(views: readonly unknown[]): readonly Record<string, unknown>[] {
-  const count = views.filter((view) => isRecord(view) && isRecord(view["task"]) && view["task"]["status"] === "running" && typeof view["task"]["pid"] !== "number").length;
-  return count === 0 ? [] : [{ id: "unchecked-runs", label: count === 1 ? "1 managed run" : `${String(count)} managed runs`, tone: "accent", busy: true, count }];
-}
 const COMMAND_CHARS = 4_096;
 
 /** A task as the page draws it; `durationMs` is measured on this machine when the list was read. */
@@ -115,7 +104,6 @@ export function startWebBridge(events: PiEvents, now: () => number = Date.now): 
       const at = now();
       const tasks = views.flatMap((view: unknown) => { const task = publishedTask(view, at); return task === undefined ? [] : [task]; });
       if (stopped) return;
-      events.emit(SESSION_STATES_CHANNEL, uncheckedRunsState(views));
       events.emit(TASKS_CHANNEL, { tasks, more: isRecord(listed) && typeof listed["nextCursor"] === "string" });
     } catch {
       // No answer is not "no tasks": what was published stays, and the next change reads again.

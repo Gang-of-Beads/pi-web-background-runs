@@ -53,10 +53,20 @@ function runningRecordStatus(start, startedAtMs) {
       return Math.abs(start.atMs - startedAtMs) <= PID_REUSE_TOLERANCE_MS ? "running" : "lost";
   }
 }
-async function probedRunningStatus(task, probeProcessStart) {
+function ownerPidOf(file) {
+  const pid = /-(\d+)$/.exec(basename(dirname(file)))?.[1];
+  return pid === void 0 ? void 0 : Number(pid);
+}
+function managedRunStatus(owner, startedAtMs) {
+  if (owner.kind === "gone") return "lost";
+  if (owner.kind === "unreadable") return "unknown";
+  return startedAtMs === void 0 || owner.atMs <= startedAtMs + PID_REUSE_TOLERANCE_MS ? "running" : "lost";
+}
+async function probedRunningStatus(task, file, probeProcessStart) {
   const pid = asNumber(task.pid);
-  if (pid === void 0) return "unknown";
-  return runningRecordStatus(await probeProcessStart(pid), asNumber(task.startTime));
+  if (pid !== void 0) return runningRecordStatus(await probeProcessStart(pid), asNumber(task.startTime));
+  const owner = ownerPidOf(file);
+  return owner === void 0 ? "unknown" : managedRunStatus(await probeProcessStart(owner), asNumber(task.startTime));
 }
 async function taskIdsForSession(transcriptPath) {
   let size;
@@ -181,7 +191,7 @@ async function runningTaskIds(cwd, probeProcessStart) {
   const running = /* @__PURE__ */ new Set();
   for (const [id, record] of await readTaskRecords(cwd)) {
     if (asString(record.task.status) !== "running") continue;
-    if (await probedRunningStatus(record.task, probeProcessStart) !== "running") continue;
+    if (await probedRunningStatus(record.task, record.file, probeProcessStart) !== "running") continue;
     running.add(id);
   }
   return running;
@@ -249,7 +259,7 @@ async function listBackgroundTasks(cwd, transcriptPath, now, probeProcessStart) 
     const rawStatus = asString(task.status) ?? "unknown";
     const startedAt = asNumber(task.startTime);
     const endedAt = asNumber(task.endTime);
-    const status = rawStatus === "running" ? await probedRunningStatus(task, probeProcessStart) : rawStatus;
+    const status = rawStatus === "running" ? await probedRunningStatus(task, record.file, probeProcessStart) : rawStatus;
     tasks.push({
       id,
       name: asString(task.name) ?? id,

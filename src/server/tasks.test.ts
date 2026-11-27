@@ -274,7 +274,7 @@ describe("asking ps when a pid's process was born", () => {
     expect(await runningTaskIds(cwd, unreadable)).toEqual(new Set());
   });
 
-  it("lists a running record with no pid as unknown: it names no process to check", async () => {
+  it("reads a running record with no pid by the pi process its folder names", async () => {
     const cwd = await fixture();
     const file = join(cwd, ".pi", "tasks", "session-494694-494694", "b96da5ec8.json");
     await writeFile(file, JSON.stringify({
@@ -287,9 +287,16 @@ describe("asking ps when a pid's process was born", () => {
       bytesWritten: 0,
     }));
 
-    const tasks = await listBackgroundTasks(cwd, await transcript(cwd), Date.now(), fakeProbe);
+    const ownerBorn = (atMs: number) => (pid: number): Promise<ProcessStart> => Promise.resolve(pid === 494694 ? { kind: "born", atMs } : { kind: "gone" });
+    const statusWith = async (probe: (pid: number) => Promise<ProcessStart>): Promise<string | undefined> =>
+      (await listBackgroundTasks(cwd, await transcript(cwd), Date.now(), probe)).find((task) => task.id === "b96da5ec8")?.status;
 
-    expect(tasks.find((task) => task.id === "b96da5ec8")?.status).toBe("unknown");
+    expect({
+      ownerOlderThanTheRun: await statusWith(ownerBorn(Date.now() - 3_600_000)),
+      ownerGone: await statusWith(fakeProbe),
+      pidInheritedLater: await statusWith(ownerBorn(Date.now() + 3_600_000)),
+      counted: await runningTaskIds(cwd, ownerBorn(Date.now() - 3_600_000)),
+    }).toEqual({ ownerOlderThanTheRun: "running", ownerGone: "lost", pidInheritedLater: "lost", counted: new Set(["b96da5ec8"]) });
   });
 });
 

@@ -39,7 +39,7 @@ The server part still runs inside the PI WEB session daemon, for what an extensi
 - every task the extension does not publish: what the session ran before its runtime last started, and anything older than its newest 50;
 - the list, the output and `/kill` on a PI WEB without the bus, and for a session whose extension publishes nothing.
 
-A running task that names no process (a Fusion or managed run) cannot be counted by the server part, which checks processes; the extension says those itself, as "N managed runs" on the session, while the session's runtime is open. A running task's time is counted on the machine's clock, which the page asks for once a session.
+A Fusion run names no process of its own: it lives inside the pi process that started it. The server part counts it as a background run while that pi process is alive. A running task's time is counted on the machine's clock, which the page asks for once a session.
 
 ### The server part's read of the task records
 

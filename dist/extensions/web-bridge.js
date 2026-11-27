@@ -114,15 +114,10 @@ var LISTED = 50;
 var OUTPUT_BYTES = 8192;
 var ANSWER_JSON_BYTES = 6e4;
 var CLOCK_CHANNEL = "background-runs:clock";
-var SESSION_STATES_CHANNEL = "piweb:states:background-runs";
 function fitted(answer) {
   let text = answer.text;
   while (text !== "" && Buffer.byteLength(JSON.stringify({ ...answer, text })) > ANSWER_JSON_BYTES) text = text.slice(Math.ceil(text.length / 4));
   return text === answer.text ? answer : { ...answer, text, truncated: true };
-}
-function uncheckedRunsState(views) {
-  const count = views.filter((view) => isRecord2(view) && isRecord2(view["task"]) && view["task"]["status"] === "running" && typeof view["task"]["pid"] !== "number").length;
-  return count === 0 ? [] : [{ id: "unchecked-runs", label: count === 1 ? "1 managed run" : `${String(count)} managed runs`, tone: "accent", busy: true, count }];
 }
 var COMMAND_CHARS = 4096;
 function isRecord2(value) {
@@ -175,7 +170,6 @@ function startWebBridge(events, now = Date.now) {
         return task === void 0 ? [] : [task];
       });
       if (stopped) return;
-      events.emit(SESSION_STATES_CHANNEL, uncheckedRunsState(views));
       events.emit(TASKS_CHANNEL, { tasks, more: isRecord2(listed) && typeof listed["nextCursor"] === "string" });
     } catch {
     } finally {

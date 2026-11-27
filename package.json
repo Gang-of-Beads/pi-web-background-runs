@@ -54,9 +54,6 @@
       },
       "background-runs:clock": {
         "kind": "request"
-      },
-      "piweb:states:background-runs": {
-        "kind": "state"
       }
     }
   },
