@@ -6,19 +6,21 @@ import { BackgroundTaskHostClient, HostRefusal, type PiEvents } from "./hostClie
  *
  * The bridge follows the host interface's change feed and publishes, on the channels this package
  * declares under `piWeb.bus`:
- * - `background-runs:tasks`, state: the newest tasks, as the Background page draws them;
- * - `piweb:states:background-runs`, state: "N background runs" while any runs, which is what keeps
- *   the session reading busy in the lists;
- * and answers `background-runs:stop`, `background-runs:output` requests through that interface.
- * In the terminal nobody listens, and each publish is one no-op emit.
+ * `background-runs:tasks` (state: the newest tasks, as the Background page draws them), and answers
+ * `background-runs:stop` and `background-runs:output` requests through that interface. In the
+ * terminal nobody listens, and each publish is one no-op emit.
+ *
+ * It does not publish the session's "N background runs" state: a task can outlive the session's
+ * runtime, where no extension is left to say so, and the plugin's server half counts those from the
+ * task records.
  */
 
 export const TASKS_CHANNEL = "background-runs:tasks";
-export const SESSION_STATES_CHANNEL = "piweb:states:background-runs";
 export const STOP_CHANNEL = "background-runs:stop";
 export const OUTPUT_CHANNEL = "background-runs:output";
 
 const LISTED = 50;
+/** The most output one answer carries: PI WEB's bus takes 64 KiB a value, and JSON escapes grow the text. */
 const OUTPUT_BYTES = 32_768;
 const COMMAND_CHARS = 2_000;
 
@@ -54,16 +56,15 @@ export function publishedTask(view: unknown, now: number): PublishedTask | undef
   };
 }
 
-/** The session state PI WEB reads: busy while tasks run, nothing otherwise. */
-export function runningState(running: number): unknown[] {
-  if (running === 0) return [];
-  return [{ id: "runs", label: `${String(running)} background ${running === 1 ? "run" : "runs"}`, tone: "accent", busy: true, count: running }];
-}
-
 interface BusRequest { readonly id: unknown; readonly input: unknown }
 
 function busRequest(data: unknown): BusRequest | undefined {
   return isRecord(data) ? { id: data["id"], input: data["input"] } : undefined;
+}
+
+function tailBytesOf(input: unknown): number {
+  const bytes = isRecord(input) ? input["tailBytes"] : undefined;
+  return typeof bytes === "number" && Number.isFinite(bytes) && bytes >= 1 ? Math.min(Math.floor(bytes), OUTPUT_BYTES) : OUTPUT_BYTES;
 }
 
 function taskIdOf(input: unknown): string | undefined {
@@ -91,7 +92,6 @@ export function startWebBridge(events: PiEvents, now: () => number = Date.now): 
       const at = now();
       const tasks = views.flatMap((view: unknown) => { const task = publishedTask(view, at); return task === undefined ? [] : [task]; });
       events.emit(TASKS_CHANNEL, { tasks, more: isRecord(listed) && typeof listed["nextCursor"] === "string" });
-      events.emit(SESSION_STATES_CHANNEL, runningState(tasks.filter((task) => task.status === "running").length));
     } catch {
       // No answer is not "no tasks": what was published stays, and the next change reads again.
     } finally {
@@ -100,20 +100,20 @@ export function startWebBridge(events: PiEvents, now: () => number = Date.now): 
     }
   };
 
-  const answer = (channel: string, handle: (taskId: string) => Promise<unknown>): (() => void) => events.on(`${channel}:request`, (data) => {
+  const answer = (channel: string, handle: (taskId: string, input: unknown) => Promise<unknown>): (() => void) => events.on(`${channel}:request`, (data) => {
     const request = busRequest(data);
     if (request === undefined) return;
     const taskId = taskIdOf(request.input);
     const reply = (body: Record<string, unknown>): void => { events.emit(`${channel}:response`, { id: request.id, ...body }); };
     if (taskId === undefined) { reply({ error: "A task id is needed." }); return; }
-    handle(taskId).then((result) => { reply({ result }); }, (error: unknown) => { reply({ error: error instanceof HostRefusal ? `${error.code}: ${error.message}` : "The background task service failed." }); });
+    handle(taskId, request.input).then((result) => { reply({ result }); }, (error: unknown) => { reply({ error: error instanceof HostRefusal ? `${error.code}: ${error.message}` : "The background task service failed." }); });
   });
 
   const unsubscribes = [
     host.onChanged((kind) => { if (kind !== "closed") void publish(); }),
     answer(STOP_CHANNEL, async (taskId) => { await host.stop(taskId); void publish(); return { stopped: true }; }),
-    answer(OUTPUT_CHANNEL, async (taskId) => {
-      const logs = await host.logs(taskId, OUTPUT_BYTES);
+    answer(OUTPUT_CHANNEL, async (taskId, input) => {
+      const logs = await host.logs(taskId, tailBytesOf(input));
       const task = isRecord(logs) && isRecord(logs["task"]) ? logs["task"] : {};
       const command = typeof task["command"] === "string" ? task["command"] : "";
       return {

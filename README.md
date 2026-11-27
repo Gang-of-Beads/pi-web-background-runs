@@ -1,6 +1,8 @@
 # pi-web-background-runs
 
-A [PI WEB](https://github.com/Gang-of-Beads/pi-web) plugin for [pi-background-tasks](https://www.npmjs.com/package/pi-background-tasks), the extension behind the `bg_run` tool.
+Background tasks for [pi](https://pi.dev) with their [PI WEB](https://github.com/Gang-of-Beads/pi-web) half, from one install: [pi-background-tasks](https://www.npmjs.com/package/pi-background-tasks), the extension behind the `bg_run` tool, and a Background page that draws its tasks.
+
+The extension is not copied here. It is a dependency, loaded as it loads itself, so its releases arrive with a version bump; it is maintained by [ismailsaleekh](https://github.com/ismailsaleekh/pi-background-tasks) under the ISC licence.
 
 - A **Background** tab beside the conversation lists the open session's background tasks with their state and how long they ran; its badge counts the running ones.
 - A task's row opens to the command it runs, four lines at most with its own scroll, with a key that copies it (a command over 4,096 characters is shown and copied only that far, and the key says so), and the end of its output, which follows a running task every two seconds while the tab is on screen. **Whole log** shows the last 1 MiB of the output on the whole screen and says when it is cut. Under the output the row says how much of it is shown, and a finished task's exit code. A task whose process ended without recording an exit code reads "ended · no exit code", and one where PI WEB cannot tell whether it still runs (its process could not be checked, or its record names none) reads "unknown"; opening either row says what that means. **Stop** on a running task sends the extension's `/kill <id>` to the session at once and shows the extension's answer on the row; **Stop all** beside "Running" asks first, then stops every running task.
@@ -11,7 +13,8 @@ A [PI WEB](https://github.com/Gang-of-Beads/pi-web) plugin for [pi-background-ta
 
 - PI WEB 2.202610.5 or later. Earlier releases bundle their own copy of this plugin, which wins over an installed one (Settings → PI WEB plugins reports the duplicate id).
 - Rows that open need a PI WEB whose plugin API has `ui.renderOutput` (plugin API 0.1.0-alpha.6); older releases show the rows without opening them. Stop and Stop all also need a PI WEB that lets a plugin run the session commands it declares; without it an open running row says "Stop needs a newer PI WEB on this machine."
-- The pi-background-tasks extension installed in pi.
+- **Do not also install `pi-background-tasks` on its own.** This package loads it, and two copies register the same tools twice. If it is in your pi settings from before 0.2.0, remove it: `pi remove npm:pi-background-tasks`.
+- With a PI WEB that has the extension bus (after 2.202611.10) the page reads its tasks from the extension; on older releases it reads the task records, as before 0.2.0.
 
 ## Install
 
@@ -25,6 +28,18 @@ The plugin has a server part, so restart the PI WEB session daemon, then reload 
 
 ## How it works
 
+Three pi extensions load from this package: pi-background-tasks' own two, re-exported from the dependency, and a small bridge. pi-background-tasks offers a front end a host interface on `pi.events` (list, logs, stop and a change feed; its `docs/api/eventbus-host-v1.md`). The bridge follows that interface and publishes the session's newest 50 tasks on `background-runs:tasks`, and answers `background-runs:stop` and `background-runs:output`, the channels this package declares for PI WEB's extension bus. In the terminal nobody listens and each publish is one emit.
+
+The page reads those channels through `context.session.bus`: the list, an open row's command and the end of its output, and Stop, which stops exactly the task the row names and says why when it cannot.
+
+The server part still runs inside the PI WEB session daemon, for what an extension cannot say:
+
+- the count behind "N background runs" on a session's row, which must hold for a session whose runtime is closed while its tasks run on;
+- the whole log of a task, up to a megabyte, which is more than the bus carries in one value;
+- the list, the output and `/kill` on a PI WEB without the bus, and for a session whose extension publishes nothing.
+
+### The server part's read of the task records
+
 The server part runs inside the PI WEB session daemon. It reads the registry pi-background-tasks keeps under the project folder (`.pi/tasks`), matches each task to the session that started it, and answers the browser's `tasks.list` operation. Its `tasks.output` operation answers for one of the session's tasks with its command (the first 4,096 characters) and the end of its output file (8 KiB for an open row, 1 MiB for the Whole log), cut at a line start; it reads only tasks the session owns and only files under `.pi/tasks`. Once it has matched a task, it records the match in `.pi/tasks/attribution.json`, so the task stays with its session after compaction removes the transcript line that proved it. It declares the extension's directories (`.pi/tasks`, `.pi/delegate`), so while the plugin is on the daemon watches them to keep the running count current, and the Files and Git panels ignore their churn. The browser part draws the tab, the activity note and the notice row. The package declares `kill` in `piWeb.plugins[].sessionCommands`, so PI WEB lets the tab run `/kill <id>` in the session on screen and shows the declaration on the plugin's card in Settings.
 
 ## Development
@@ -34,7 +49,7 @@ npm install
 npm run check
 ```
 
-`npm run check` type-checks, runs the tests, and builds two bundles with esbuild: `dist/browser/pi-web-plugin.js` for the page and `dist/server-plugin.js` for the daemon. `dist/` is committed so that `pi install git:` works without a build step, and the check fails when it is out of date.
+`npm run check` type-checks, runs the tests, and builds with esbuild: `dist/browser/pi-web-plugin.js` for the page, `dist/server-plugin.js` for the daemon and `dist/extensions/` for pi. `dist/` is committed so that `pi install git:` works without a build step, and the check fails when it is out of date.
 
 To try a change in a running PI WEB, link the working copy as a local plugin, restart the session daemon and reload the tab:
 

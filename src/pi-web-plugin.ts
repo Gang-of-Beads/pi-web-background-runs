@@ -3,6 +3,7 @@ import { backgroundRunCountOf, backgroundRunNote } from "./backgroundRunNote.js"
 import { noticeLabel, taskNotice } from "./taskNotice.js";
 import { backgroundListModel, localClockTime, STOP_NOTE_LINE, stopNote, type ListControls, type NoteLine, type StopOutcome, type TaskRow } from "./backgroundTaskRows.js";
 import { outputFrom, TaskOutputReads, TasksReader, tasksAt, type TaskScope, type TasksView } from "./tasksRead.js";
+import { OUTPUT_CHANNEL, outputAnswer, PublishedTasks, sessionBusOf, STOP_CHANNEL, stopOutcome, type SessionBus } from "./sessionBus.js";
 import { defineTaskDetailElements, OUTPUT_TAIL_BYTES, taskDetailBody, WHOLE_LOG_BYTES, wholeLogContent, type RowUi } from "./taskDetail.js";
 
 /** The selected session's working directory and transcript; a session with no transcript yet has no scope. */
@@ -47,9 +48,19 @@ const plugin: PiWebPlugin = {
       reader.forget();
       requestUpdate();
     });
+    const published = new PublishedTasks();
+    /** The bus of the session on screen while its extension publishes its tasks there; the task records are read otherwise. */
+    const publishingBus = (panel: WorkspacePanelContext): SessionBus | undefined => {
+      const session = panel.session;
+      const bus = sessionBusOf(session);
+      return session !== undefined && published.viewFor(JSON.stringify([panel.machine.id, session.id]), bus, Date.now()) !== undefined ? bus : undefined;
+    };
     /** The panel and the tab's badge both ask, so the read follows the selected session while the panel is closed too. */
     const viewOf = (panel: WorkspacePanelContext): TasksView => {
       requestUpdate = () => { panel.host.requestRender(); };
+      const session = panel.session;
+      const fromBus = session === undefined ? undefined : published.viewFor(JSON.stringify([panel.machine.id, session.id]), sessionBusOf(session), Date.now());
+      if (fromBus !== undefined) return fromBus;
       const scope = scopeOf(panel);
       if (scope === undefined) return NO_TRANSCRIPT;
       reader.follow(scope, readKeyOf(panel));
@@ -92,22 +103,32 @@ const plugin: PiWebPlugin = {
     const rowControls = (panel: WorkspacePanelContext, scope: TaskScope): ListControls => {
       const renderOutput = ui?.renderOutput;
       const renderButton = ui?.renderButton;
-      if (ui === undefined || renderOutput === undefined || renderButton === undefined || callOperation === undefined) return {};
+      const bus = publishingBus(panel);
+      if (ui === undefined || renderOutput === undefined || renderButton === undefined || (callOperation === undefined && bus === undefined)) return {};
       const rowUi: RowUi = { renderOutput, renderButton };
       const machineId = panel.machine.id;
       const sessionKey = JSON.stringify([machineId, scope.sessionFile]);
       const keyOf = (taskId: string): string => JSON.stringify([machineId, scope.sessionFile, taskId]);
-      const readOutput = (taskId: string, tailBytes: number): Promise<unknown> =>
-        callOperation("tasks.output", { cwd: scope.cwd, sessionFile: scope.sessionFile, taskId, tailBytes });
+      /** A row's tail comes from the extension when it publishes; the whole log is a megabyte, more than the bus carries, and is read from the record's output file. */
+      const readOutput = (taskId: string, tailBytes: number): Promise<unknown> => {
+        if (bus !== undefined && tailBytes <= OUTPUT_TAIL_BYTES) return bus.request(OUTPUT_CHANNEL, { id: taskId, tailBytes }).then(outputAnswer);
+        if (callOperation === undefined) return Promise.reject(new Error("no operations"));
+        return callOperation("tasks.output", { cwd: scope.cwd, sessionFile: scope.sessionFile, taskId, tailBytes });
+      };
       const stopPending = (key: string): boolean => stops.has(key) && stops.get(key) === undefined;
       const session = panel.session;
       const runCommand = session?.runCommand;
-      const stop = session === undefined || runCommand === undefined ? undefined : (row: TaskRow): Promise<void> => {
+      /** Through the extension when it publishes, which stops the task it names and says why when it cannot; else the session's `/kill`. */
+      const sendStop = (row: TaskRow): Promise<PluginSessionCommandOutcome> | undefined => {
+        if (bus !== undefined) return bus.request(STOP_CHANNEL, { id: row.id }).then(() => stopOutcome({}), (error: unknown) => stopOutcome({ error }));
+        if (session === undefined || runCommand === undefined) return undefined;
+        return runCommand({ sessionId: session.id, name: "kill", args: row.id }).catch(() => LOST_ANSWER);
+      };
+      const stop = bus === undefined && (session === undefined || runCommand === undefined) ? undefined : (row: TaskRow): Promise<void> => {
         const key = keyOf(row.id);
         stops.set(key, undefined);
         requestUpdate();
-        return runCommand({ sessionId: session.id, name: "kill", args: row.id })
-          .catch(() => LOST_ANSWER)
+        return (sendStop(row) ?? Promise.resolve(LOST_ANSWER))
           .then((outcome) => {
             stops.set(key, outcome);
             reader.forget();

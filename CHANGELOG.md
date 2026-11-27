@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0
+
+- One install: the package now loads pi-background-tasks itself, as a dependency. **Remove a separately installed copy** (`pi remove npm:pi-background-tasks`), or its tools register twice.
+- With a PI WEB that has the extension bus (after 2.202611.10), the Background page reads the session's tasks from the extension, through pi-background-tasks' own host interface, instead of reading its task records and running `ps`; an open row's command and output come the same way.
+- Stop goes through that interface too. It stops exactly the task the row names and says why when it cannot, where `/kill` answered "Unknown background task ID" for a task its registry no longer knew.
+- A running task's elapsed time is counted from its start time.
+- Unchanged on older PI WEB releases, and for the running count and the whole log, which the server part still reads.
+- Restart the session daemon after updating.
+
 ## 0.1.5
 
 - Require plugin API alpha.10; a host without `session.runCommand` hides Stop instead of failing on the type.

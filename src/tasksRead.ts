@@ -88,7 +88,7 @@ export class TasksReader {
 }
 
 /** The tasks in a `tasks.list` answer; undefined when the answer is not one, which is a failed read. */
-function tasksFrom(answer: unknown): readonly TaskInput[] | undefined {
+export function tasksFrom(answer: unknown): readonly TaskInput[] | undefined {
   if (!isRecord(answer) || answer["known"] !== true || !Array.isArray(answer["tasks"])) return undefined;
   return answer["tasks"].flatMap((entry: unknown) => {
     if (!isRecord(entry)) return [];
