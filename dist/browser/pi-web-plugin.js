@@ -300,6 +300,7 @@ var PublishedTasks = class {
   viewFor(key, bus, now) {
     const state = bus?.state(TASKS_CHANNEL);
     if (state === void 0 || !state.known) return void 0;
+    if (isRecord2(state.value) && state.value["more"] === true) return void 0;
     const json = JSON.stringify(state.value);
     if (this.held?.key !== key || this.held.json !== json) {
       const tasks = tasksFrom({ known: true, tasks: isRecord2(state.value) ? state.value["tasks"] : void 0 });
@@ -316,8 +317,13 @@ function runningSince(task, now) {
 function outputAnswer(result) {
   return isRecord2(result) ? { known: true, ...result } : void 0;
 }
+function answerLost(error) {
+  const code = isRecord2(error) ? error["code"] : void 0;
+  return code === "timeout" || code === "unreachable" || error instanceof Error && error.message.startsWith("NO_ANSWER");
+}
 function stopOutcome(settled) {
   if (!("error" in settled)) return { kind: "ran", notices: [{ level: "info", message: "Stopped" }] };
+  if (answerLost(settled.error)) return { kind: "unknown", words: "" };
   const words = settled.error instanceof Error ? settled.error.message : "The task could not be stopped.";
   return { kind: "ran", notices: [{ level: "error", message: words }] };
 }
@@ -596,7 +602,10 @@ var plugin = {
       };
       const session = panel.session;
       const fromBus = session === void 0 ? void 0 : published.viewFor(JSON.stringify([panel.machine.id, session.id]), sessionBusOf(session), Date.now());
-      if (fromBus !== void 0) return fromBus;
+      if (fromBus !== void 0) {
+        reader.forget();
+        return fromBus;
+      }
       const scope = scopeOf(panel);
       if (scope === void 0) return NO_TRANSCRIPT;
       reader.follow(scope, readKeyOf(panel));
@@ -638,9 +647,8 @@ var plugin = {
       const sessionKey = JSON.stringify([machineId, scope.sessionFile]);
       const keyOf = (taskId) => JSON.stringify([machineId, scope.sessionFile, taskId]);
       const readOutput = (taskId, tailBytes) => {
-        if (bus !== void 0 && tailBytes <= OUTPUT_TAIL_BYTES) return bus.request(OUTPUT_CHANNEL, { id: taskId, tailBytes }).then(outputAnswer);
-        if (callOperation === void 0) return Promise.reject(new Error("no operations"));
-        return callOperation("tasks.output", { cwd: scope.cwd, sessionFile: scope.sessionFile, taskId, tailBytes });
+        const fromRecords = () => callOperation === void 0 ? Promise.reject(new Error("no operations")) : callOperation("tasks.output", { cwd: scope.cwd, sessionFile: scope.sessionFile, taskId, tailBytes });
+        return bus !== void 0 && tailBytes <= OUTPUT_TAIL_BYTES ? bus.request(OUTPUT_CHANNEL, { id: taskId, tailBytes }).then(outputAnswer).catch(fromRecords) : fromRecords();
       };
       const stopPending = (key) => stops.has(key) && stops.get(key) === void 0;
       const session = panel.session;
@@ -730,7 +738,7 @@ var plugin = {
               const count = running.length;
               void confirm({
                 title: `Stop ${String(count)} background ${count === 1 ? "run" : "runs"}?`,
-                message: "Each one is sent /kill now. What they wrote so far stays in their output.",
+                message: "Each one is stopped now. What they wrote so far stays in their output.",
                 confirmLabel: "Stop all",
                 tone: "danger"
               }).then((confirmed) => {

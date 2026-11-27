@@ -90,6 +90,7 @@ var BackgroundTaskHostClient = class {
           reject(new HostRefusal("NO_ANSWER", `The background task service did not answer ${operation}.`));
         });
       }, this.timeoutMs);
+      timer.unref();
       const stopListening = this.events.on(HOST_RESPONSE_CHANNEL, (frame) => {
         if (!isRecord(frame) || frame["request_id"] !== requestId) return;
         const error = frame["error"];
@@ -110,7 +111,7 @@ var TASKS_CHANNEL = "background-runs:tasks";
 var STOP_CHANNEL = "background-runs:stop";
 var OUTPUT_CHANNEL = "background-runs:output";
 var LISTED = 50;
-var OUTPUT_BYTES = 32768;
+var OUTPUT_BYTES = 8192;
 var COMMAND_CHARS = 2e3;
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -118,7 +119,7 @@ function isRecord2(value) {
 function publishedTask(view, now) {
   const task = isRecord2(view) ? view["task"] : void 0;
   if (!isRecord2(view) || !isRecord2(task) || typeof task["id"] !== "string" || typeof task["status"] !== "string") return void 0;
-  const name = typeof task["name"] === "string" && task["name"] !== "" ? task["name"] : typeof task["command"] === "string" ? task["command"].slice(0, 80) : task["id"];
+  const name = typeof task["name"] === "string" && task["name"] !== "" ? task["name"].slice(0, 80) : typeof task["command"] === "string" ? task["command"].slice(0, 80) : task["id"];
   const startTime = typeof task["startTime"] === "number" ? task["startTime"] : void 0;
   const endTime = typeof task["endTime"] === "number" ? task["endTime"] : void 0;
   return {
@@ -145,7 +146,9 @@ function startWebBridge(events, now = Date.now) {
   const host = new BackgroundTaskHostClient(events, "pi-web-background-runs");
   let reading = false;
   let again = false;
+  let stopped = false;
   const publish = async () => {
+    if (stopped) return;
     if (reading) {
       again = true;
       return;
@@ -159,7 +162,7 @@ function startWebBridge(events, now = Date.now) {
         const task = publishedTask(view, at);
         return task === void 0 ? [] : [task];
       });
-      events.emit(TASKS_CHANNEL, { tasks, more: isRecord2(listed) && typeof listed["nextCursor"] === "string" });
+      if (!stopped) events.emit(TASKS_CHANNEL, { tasks, more: isRecord2(listed) && typeof listed["nextCursor"] === "string" });
     } catch {
     } finally {
       reading = false;
@@ -213,6 +216,7 @@ function startWebBridge(events, now = Date.now) {
       void publish();
     },
     stop: () => {
+      stopped = true;
       for (const unsubscribe of unsubscribes) unsubscribe();
     }
   };
@@ -222,8 +226,7 @@ function startWebBridge(events, now = Date.now) {
 function webBridgeExtension(pi) {
   let bridge;
   pi.on("session_start", () => {
-    bridge?.stop();
-    bridge = startWebBridge(pi.events);
+    bridge ??= startWebBridge(pi.events);
     bridge.refresh();
   });
   pi.on("session_shutdown", () => {

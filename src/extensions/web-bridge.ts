@@ -15,8 +15,8 @@ interface BridgeHost {
 export default function webBridgeExtension(pi: BridgeHost): void {
   let bridge: WebBridge | undefined;
   pi.on("session_start", () => {
-    bridge?.stop();
-    bridge = startWebBridge(pi.events);
+    /** One bridge for the extension's life: a second client under the same name would restart the lease's request numbering and be refused. */
+    bridge ??= startWebBridge(pi.events);
     bridge.refresh();
   });
   pi.on("session_shutdown", () => {

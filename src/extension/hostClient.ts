@@ -103,6 +103,7 @@ export class BackgroundTaskHostClient {
         run();
       };
       const timer = setTimeout(() => { settle(() => { reject(new HostRefusal("NO_ANSWER", `The background task service did not answer ${operation}.`)); }); }, this.timeoutMs);
+      timer.unref();
       const stopListening = this.events.on(HOST_RESPONSE_CHANNEL, (frame) => {
         if (!isRecord(frame) || frame["request_id"] !== requestId) return;
         const error = frame["error"];

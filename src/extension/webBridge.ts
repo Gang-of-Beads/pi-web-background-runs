@@ -20,8 +20,12 @@ export const STOP_CHANNEL = "background-runs:stop";
 export const OUTPUT_CHANNEL = "background-runs:output";
 
 const LISTED = 50;
-/** The most output one answer carries: PI WEB's bus takes 64 KiB a value, and JSON escapes grow the text. */
-const OUTPUT_BYTES = 32_768;
+/**
+ * The most output one answer carries. PI WEB's bus takes 64 KiB a value, measured as JSON, where a
+ * control byte of coloured output costs six: 8 KiB of output and 2,000 characters of command fit at
+ * their worst.
+ */
+const OUTPUT_BYTES = 8_192;
 const COMMAND_CHARS = 2_000;
 
 /** A task as the page draws it; `durationMs` is measured on this machine when the list was read. */
@@ -43,7 +47,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function publishedTask(view: unknown, now: number): PublishedTask | undefined {
   const task = isRecord(view) ? view["task"] : undefined;
   if (!isRecord(view) || !isRecord(task) || typeof task["id"] !== "string" || typeof task["status"] !== "string") return undefined;
-  const name = typeof task["name"] === "string" && task["name"] !== "" ? task["name"] : typeof task["command"] === "string" ? task["command"].slice(0, 80) : task["id"];
+  const name = typeof task["name"] === "string" && task["name"] !== "" ? task["name"].slice(0, 80) : typeof task["command"] === "string" ? task["command"].slice(0, 80) : task["id"];
   const startTime = typeof task["startTime"] === "number" ? task["startTime"] : undefined;
   const endTime = typeof task["endTime"] === "number" ? task["endTime"] : undefined;
   return {
@@ -82,8 +86,10 @@ export function startWebBridge(events: PiEvents, now: () => number = Date.now): 
   const host = new BackgroundTaskHostClient(events, "pi-web-background-runs");
   let reading = false;
   let again = false;
+  let stopped = false;
 
   const publish = async (): Promise<void> => {
+    if (stopped) return;
     if (reading) { again = true; return; }
     reading = true;
     try {
@@ -91,7 +97,7 @@ export function startWebBridge(events: PiEvents, now: () => number = Date.now): 
       const views = isRecord(listed) && Array.isArray(listed["tasks"]) ? listed["tasks"] : [];
       const at = now();
       const tasks = views.flatMap((view: unknown) => { const task = publishedTask(view, at); return task === undefined ? [] : [task]; });
-      events.emit(TASKS_CHANNEL, { tasks, more: isRecord(listed) && typeof listed["nextCursor"] === "string" });
+      if (!stopped) events.emit(TASKS_CHANNEL, { tasks, more: isRecord(listed) && typeof listed["nextCursor"] === "string" });
     } catch {
       // No answer is not "no tasks": what was published stays, and the next change reads again.
     } finally {
@@ -128,6 +134,6 @@ export function startWebBridge(events: PiEvents, now: () => number = Date.now): 
 
   return {
     refresh: () => { void publish(); },
-    stop: () => { for (const unsubscribe of unsubscribes) unsubscribe(); },
+    stop: () => { stopped = true; for (const unsubscribe of unsubscribes) unsubscribe(); },
   };
 }

@@ -10,6 +10,9 @@ import { tasksFrom, type TasksView } from "./tasksRead.js";
  * nothing (an older PI WEB, a session whose runtime is not open, a pi-background-tasks installed on
  * its own without this package's bridge) the state is unknown, and the page falls back to the
  * server half's read of the task records.
+ *
+ * shortcut: a running task's elapsed time is this device's clock against the machine's start time, so
+ * the two clocks' difference shows in it; upgrade by publishing the machine's clock when that matters.
  */
 
 export const TASKS_CHANNEL = "background-runs:tasks";
@@ -48,6 +51,8 @@ export class PublishedTasks {
   viewFor(key: string, bus: SessionBus | undefined, now: number): TasksView | undefined {
     const state = bus?.state(TASKS_CHANNEL);
     if (state === undefined || !state.known) return undefined;
+    /** The extension lists its newest 50. Past that a long-running task would drop off the list unseen, and the task records hold every one. */
+    if (isRecord(state.value) && state.value["more"] === true) return undefined;
     const json = JSON.stringify(state.value);
     if (this.held?.key !== key || this.held.json !== json) {
       const tasks = tasksFrom({ known: true, tasks: isRecord(state.value) ? state.value["tasks"] : undefined });
@@ -73,9 +78,16 @@ export function outputAnswer(result: unknown): unknown {
   return isRecord(result) ? { known: true, ...result } : undefined;
 }
 
+/** A request that may have been carried out with its answer lost: only the list says whether the task stopped. */
+function answerLost(error: unknown): boolean {
+  const code: unknown = isRecord(error) ? error["code"] : undefined;
+  return code === "timeout" || code === "unreachable" || (error instanceof Error && error.message.startsWith("NO_ANSWER"));
+}
+
 /** What a stop through the bus came to, in the words a session command's outcome uses, so the row says it the same way. */
 export function stopOutcome(settled: { readonly error?: unknown }): PluginSessionCommandOutcome {
   if (!("error" in settled)) return { kind: "ran", notices: [{ level: "info", message: "Stopped" }] };
+  if (answerLost(settled.error)) return { kind: "unknown", words: "" };
   const words = settled.error instanceof Error ? settled.error.message : "The task could not be stopped.";
   return { kind: "ran", notices: [{ level: "error", message: words }] };
 }

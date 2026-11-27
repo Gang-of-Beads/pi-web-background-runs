@@ -60,7 +60,11 @@ const plugin: PiWebPlugin = {
       requestUpdate = () => { panel.host.requestRender(); };
       const session = panel.session;
       const fromBus = session === undefined ? undefined : published.viewFor(JSON.stringify([panel.machine.id, session.id]), sessionBusOf(session), Date.now());
-      if (fromBus !== undefined) return fromBus;
+      if (fromBus !== undefined) {
+        /** What the records said before the extension spoke is old by the time it falls silent. */
+        reader.forget();
+        return fromBus;
+      }
       const scope = scopeOf(panel);
       if (scope === undefined) return NO_TRANSCRIPT;
       reader.follow(scope, readKeyOf(panel));
@@ -111,9 +115,11 @@ const plugin: PiWebPlugin = {
       const keyOf = (taskId: string): string => JSON.stringify([machineId, scope.sessionFile, taskId]);
       /** A row's tail comes from the extension when it publishes; the whole log is a megabyte, more than the bus carries, and is read from the record's output file. */
       const readOutput = (taskId: string, tailBytes: number): Promise<unknown> => {
-        if (bus !== undefined && tailBytes <= OUTPUT_TAIL_BYTES) return bus.request(OUTPUT_CHANNEL, { id: taskId, tailBytes }).then(outputAnswer);
-        if (callOperation === undefined) return Promise.reject(new Error("no operations"));
-        return callOperation("tasks.output", { cwd: scope.cwd, sessionFile: scope.sessionFile, taskId, tailBytes });
+        const fromRecords = (): Promise<unknown> => callOperation === undefined
+          ? Promise.reject(new Error("no operations"))
+          : callOperation("tasks.output", { cwd: scope.cwd, sessionFile: scope.sessionFile, taskId, tailBytes });
+        /** A refusal there (a task with no output file, most often) is answered in more words by the records' read. */
+        return bus !== undefined && tailBytes <= OUTPUT_TAIL_BYTES ? bus.request(OUTPUT_CHANNEL, { id: taskId, tailBytes }).then(outputAnswer).catch(fromRecords) : fromRecords();
       };
       const stopPending = (key: string): boolean => stops.has(key) && stops.get(key) === undefined;
       const session = panel.session;
@@ -199,7 +205,7 @@ const plugin: PiWebPlugin = {
               const count = running.length;
               void confirm({
                 title: `Stop ${String(count)} background ${count === 1 ? "run" : "runs"}?`,
-                message: "Each one is sent /kill now. What they wrote so far stays in their output.",
+                message: "Each one is stopped now. What they wrote so far stays in their output.",
                 confirmLabel: "Stop all",
                 tone: "danger",
               }).then((confirmed) => {

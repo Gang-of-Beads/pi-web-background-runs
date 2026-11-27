@@ -5,15 +5,15 @@ Background tasks for [pi](https://pi.dev) with their [PI WEB](https://github.com
 The extension is not copied here. It is a dependency, loaded as it loads itself, so its releases arrive with a version bump; it is maintained by [ismailsaleekh](https://github.com/ismailsaleekh/pi-background-tasks) under the ISC licence.
 
 - A **Background** tab beside the conversation lists the open session's background tasks with their state and how long they ran; its badge counts the running ones.
-- A task's row opens to the command it runs, four lines at most with its own scroll, with a key that copies it (a command over 4,096 characters is shown and copied only that far, and the key says so), and the end of its output, which follows a running task every two seconds while the tab is on screen. **Whole log** shows the last 1 MiB of the output on the whole screen and says when it is cut. Under the output the row says how much of it is shown, and a finished task's exit code. A task whose process ended without recording an exit code reads "ended · no exit code", and one where PI WEB cannot tell whether it still runs (its process could not be checked, or its record names none) reads "unknown"; opening either row says what that means. **Stop** on a running task sends the extension's `/kill <id>` to the session at once and shows the extension's answer on the row; **Stop all** beside "Running" asks first, then stops every running task.
+- A task's row opens to the command it runs, four lines at most with its own scroll, with a key that copies it (a long command is shown and copied only as far as its first 2,000 characters, 4,096 without the extension bus, and the key says so), and the end of its output, which follows a running task every two seconds while the tab is on screen. **Whole log** shows the last 1 MiB of the output on the whole screen and says when it is cut. Under the output the row says how much of it is shown, and a finished task's exit code. A task whose process ended without recording an exit code reads "ended · no exit code", and one where PI WEB cannot tell whether it still runs (its process could not be checked, or its record names none) reads "unknown"; opening either row says what that means. **Stop** on a running task stops it at once, through the extension (on a PI WEB without the extension bus, by sending its `/kill <id>` to the session), and shows the answer on the row; **Stop all** beside "Running" asks first, then stops every running task.
 - The activity line under the conversation says how many background runs the session has going.
 - A task's end notice (`background-task-notification`) is drawn as a short "Background task" row in the conversation.
 
 ## Requirements
 
 - PI WEB 2.202610.5 or later. Earlier releases bundle their own copy of this plugin, which wins over an installed one (Settings → PI WEB plugins reports the duplicate id).
-- Rows that open need a PI WEB whose plugin API has `ui.renderOutput` (plugin API 0.1.0-alpha.6); older releases show the rows without opening them. Stop and Stop all also need a PI WEB that lets a plugin run the session commands it declares; without it an open running row says "Stop needs a newer PI WEB on this machine."
-- **Do not also install `pi-background-tasks` on its own.** This package loads it, and two copies register the same tools twice. If it is in your pi settings from before 0.2.0, remove it: `pi remove npm:pi-background-tasks`.
+- Rows that open need a PI WEB whose plugin API has `ui.renderOutput` (plugin API 0.1.0-alpha.6); older releases show the rows without opening them. Without the extension bus, Stop and Stop all also need a PI WEB that lets a plugin run the session commands it declares; without it an open running row says "Stop needs a newer PI WEB on this machine."
+- **Do not also install `pi-background-tasks` on its own.** This package loads it, and two copies register the same tools twice. If it is in your pi settings from before 0.2.0, remove it: `pi remove npm:pi-background-tasks`. Its own update notice suggests `pi install npm:pi-background-tasks@latest`; update this package instead.
 - With a PI WEB that has the extension bus (after 2.202611.10) the page reads its tasks from the extension; on older releases it reads the task records, as before 0.2.0.
 
 ## Install
@@ -36,7 +36,9 @@ The server part still runs inside the PI WEB session daemon, for what an extensi
 
 - the count behind "N background runs" on a session's row, which must hold for a session whose runtime is closed while its tasks run on;
 - the whole log of a task, up to a megabyte, which is more than the bus carries in one value;
-- the list, the output and `/kill` on a PI WEB without the bus, and for a session whose extension publishes nothing.
+- the list, the output and `/kill` on a PI WEB without the bus, for a session whose extension publishes nothing, and for a session with more than 50 tasks, where the extension's list would leave the older ones out.
+
+Two limits of the bus path: a running task's elapsed time is this device's clock against the machine's start time, so a difference between the two clocks shows in it; and the count behind "N background runs" is the server part's, which leaves out a task it cannot check by process (a delegate), though the page lists it as running.
 
 ### The server part's read of the task records
 
