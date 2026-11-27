@@ -30,13 +30,14 @@ The plugin has a server part, so restart the PI WEB session daemon, then reload 
 
 Three pi extensions load from this package: pi-background-tasks' own two, re-exported from the dependency, and a small bridge. pi-background-tasks offers a front end a host interface on `pi.events` (list, logs, stop and a change feed; its `docs/api/eventbus-host-v1.md`). The bridge follows that interface and publishes the session's newest 50 tasks on `background-runs:tasks`, and answers `background-runs:stop`, `background-runs:output` and `background-runs:clock`, the channels this package declares for PI WEB's extension bus. In the terminal nobody listens and each publish is one emit.
 
-The page reads those channels through `context.session.bus`: the list, an open row's command and the end of its output, and Stop, which stops exactly the task the row names and says why when it cannot.
+The page reads those channels through `context.session.bus`. The extension knows the tasks of its own run only, so the list is the server part's read of the task records with the extension's word laid over it, task by task: a task the extension published shows the state it says now, its open row reads the command and the end of the output from it, and Stop stops exactly that task and says why when it cannot. A task from before the session's runtime last started is shown from its record.
 
 The server part still runs inside the PI WEB session daemon, for what an extension cannot say:
 
 - the count behind "N background runs" on a session's row, which must hold for a session whose runtime is closed while its tasks run on;
 - the whole log of a task, up to a megabyte, which is more than the bus carries in one value;
-- the list, the output and `/kill` on a PI WEB without the bus, for a session whose extension publishes nothing, and for a session with more than 50 tasks, where the extension's list would leave the older ones out.
+- every task the extension does not publish: what the session ran before its runtime last started, and anything older than its newest 50;
+- the list, the output and `/kill` on a PI WEB without the bus, and for a session whose extension publishes nothing.
 
 A running task that names no process (a Fusion or managed run) cannot be counted by the server part, which checks processes; the extension says those itself, as "N managed runs" on the session, while the session's runtime is open. A running task's time is counted on the machine's clock, which the page asks for once a session.
 

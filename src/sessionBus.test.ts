@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { outputAnswer, PublishedTasks, sessionBusOf, stopOutcome, TASKS_CHANNEL, type SessionBus } from "./sessionBus.js";
+import { outputAnswer, overRecords, PublishedTasks, sessionBusOf, stopOutcome, TASKS_CHANNEL, type SessionBus } from "./sessionBus.js";
 
 function busWith(value: unknown): SessionBus {
   return { state: (channel) => (channel === TASKS_CHANNEL && value !== undefined ? { known: true, value } : { known: false }), request: () => Promise.resolve(undefined) };
@@ -26,6 +26,15 @@ describe("the page's read of the extension bus", () => {
       undefined,
       undefined,
       undefined,
+    ]);
+  });
+
+  it("lays the extension's word over the records' read, task by task", () => {
+    const records = { read: "read" as const, readAt: 1_000, tasks: [{ id: "b2", name: "serve", status: "running", durationMs: 10 }, { id: "b1", name: "old", status: "killed", durationMs: 5 }] };
+    const published = { read: "read" as const, readAt: 3_000, tasks: [{ id: "b3", name: "new", status: "running", durationMs: 1 }, { id: "b2", name: "serve", status: "completed", durationMs: 40, exitCode: 0 }] };
+    expect([overRecords(published, records, 3_000).tasks, overRecords(published, undefined, 3_000)]).toEqual([
+      [{ id: "b3", name: "new", status: "running", durationMs: 1 }, { id: "b2", name: "serve", status: "completed", durationMs: 40, exitCode: 0 }, { id: "b1", name: "old", status: "killed", durationMs: 5 }],
+      published,
     ]);
   });
 

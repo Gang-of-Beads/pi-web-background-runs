@@ -321,7 +321,6 @@ var PublishedTasks = class {
   viewFor(key, bus, now) {
     const state = bus?.state(TASKS_CHANNEL);
     if (bus === void 0 || state === void 0 || !state.known) return void 0;
-    if (isRecord2(state.value) && state.value["more"] === true) return void 0;
     const json = JSON.stringify(state.value);
     if (this.held?.key !== key || this.held.json !== json) {
       const tasks = tasksFrom({ known: true, tasks: isRecord2(state.value) ? state.value["tasks"] : void 0 });
@@ -331,7 +330,18 @@ var PublishedTasks = class {
     const machineNow = now + this.aheadMs(key, bus);
     return { tasks: this.held.tasks.map((task) => runningSince(task, machineNow)), read: "read", readAt: now };
   }
+  /** Whether the extension published this task for this session: only such a task can be asked of it. */
+  knows(key, taskId) {
+    return this.held?.key === key && this.held.tasks.some((task) => task.id === taskId);
+  }
 };
+function overRecords(published, records, now) {
+  if (records === void 0) return published;
+  const fresh = new Map(published.tasks.map((task) => [task.id, task]));
+  const recorded = tasksAt(records, now);
+  const met = new Set(recorded.map((task) => task.id));
+  return { tasks: [...published.tasks.filter((task) => !met.has(task.id)), ...recorded.map((task) => fresh.get(task.id) ?? task)], read: "read", readAt: now };
+}
 function runningSince(task, now) {
   const startedAt = task.status === "running" && task.startedAt !== void 0 ? Date.parse(task.startedAt) : Number.NaN;
   return Number.isNaN(startedAt) ? task : { ...task, durationMs: Math.max(task.durationMs ?? 0, now - startedAt) };
@@ -615,25 +625,22 @@ var plugin = {
     const published = new PublishedTasks(() => {
       requestUpdate();
     });
-    const publishingBus = (panel) => {
-      const session = panel.session;
-      const bus = sessionBusOf(session);
-      return session !== void 0 && published.viewFor(JSON.stringify([panel.machine.id, session.id]), bus, Date.now()) !== void 0 ? bus : void 0;
+    const busKeyOf = (panel) => JSON.stringify([panel.machine.id, panel.session?.id]);
+    const busFor = (panel, taskId) => {
+      const bus = sessionBusOf(panel.session);
+      return bus !== void 0 && published.viewFor(busKeyOf(panel), bus, Date.now()) !== void 0 && published.knows(busKeyOf(panel), taskId) ? bus : void 0;
     };
     const viewOf = (panel) => {
       requestUpdate = () => {
         panel.host.requestRender();
       };
-      const session = panel.session;
-      const fromBus = session === void 0 ? void 0 : published.viewFor(JSON.stringify([panel.machine.id, session.id]), sessionBusOf(session), Date.now());
-      if (fromBus !== void 0) {
-        reader.forget();
-        return fromBus;
-      }
+      const now = Date.now();
+      const fromBus = panel.session === void 0 ? void 0 : published.viewFor(busKeyOf(panel), sessionBusOf(panel.session), now);
       const scope = scopeOf(panel);
-      if (scope === void 0) return NO_TRANSCRIPT;
+      if (scope === void 0) return fromBus ?? NO_TRANSCRIPT;
       reader.follow(scope, readKeyOf(panel));
-      return reader.viewFor(scope.sessionFile);
+      const records = reader.viewFor(scope.sessionFile);
+      return fromBus === void 0 ? records : overRecords(fromBus, records, now);
     };
     const opened = /* @__PURE__ */ new Set();
     const stops = /* @__PURE__ */ new Map();
@@ -664,25 +671,27 @@ var plugin = {
     const rowControls = (panel, scope) => {
       const renderOutput = ui?.renderOutput;
       const renderButton = ui?.renderButton;
-      const bus = publishingBus(panel);
-      if (ui === void 0 || renderOutput === void 0 || renderButton === void 0 || callOperation === void 0 && bus === void 0) return {};
+      const publishes = sessionBusOf(panel.session) !== void 0 && published.viewFor(busKeyOf(panel), sessionBusOf(panel.session), Date.now()) !== void 0;
+      if (ui === void 0 || renderOutput === void 0 || renderButton === void 0 || callOperation === void 0 && !publishes) return {};
       const rowUi = { renderOutput, renderButton };
       const machineId = panel.machine.id;
       const sessionKey = JSON.stringify([machineId, scope.sessionFile]);
       const keyOf = (taskId) => JSON.stringify([machineId, scope.sessionFile, taskId]);
       const readOutput = (taskId, tailBytes) => {
         const fromRecords = () => callOperation === void 0 ? Promise.reject(new Error("no operations")) : callOperation("tasks.output", { cwd: scope.cwd, sessionFile: scope.sessionFile, taskId, tailBytes });
+        const bus = busFor(panel, taskId);
         return bus !== void 0 && tailBytes <= OUTPUT_TAIL_BYTES ? bus.request(OUTPUT_CHANNEL, { id: taskId, tailBytes }).then(outputAnswer).catch(fromRecords) : fromRecords();
       };
       const stopPending = (key) => stops.has(key) && stops.get(key) === void 0;
       const session = panel.session;
       const runCommand = session?.runCommand;
       const sendStop = (row2) => {
+        const bus = busFor(panel, row2.id);
         if (bus !== void 0) return bus.request(STOP_CHANNEL, { id: row2.id }).then(() => stopOutcome({}), (error) => stopOutcome({ error }));
         if (session === void 0 || runCommand === void 0) return void 0;
         return runCommand({ sessionId: session.id, name: "kill", args: row2.id }).catch(() => LOST_ANSWER);
       };
-      const stop = bus === void 0 && (session === void 0 || runCommand === void 0) ? void 0 : (row2) => {
+      const stop = !publishes && (session === void 0 || runCommand === void 0) ? void 0 : (row2) => {
         const key = keyOf(row2.id);
         stops.set(key, void 0);
         requestUpdate();

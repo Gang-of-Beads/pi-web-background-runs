@@ -1,15 +1,16 @@
 import type { PluginSessionCommandOutcome } from "@gang-of-beads/pi-web-plugin-api/plugin-api";
 import type { TaskInput } from "./backgroundTaskRows.js";
-import { tasksFrom, type TasksView } from "./tasksRead.js";
+import { tasksAt, tasksFrom, type TasksView } from "./tasksRead.js";
 
 /**
  * The page's read of what this package's extension publishes on PI WEB's extension bus
  * (`context.session.bus`, PI WEB after 2.202611.10).
  *
- * The bus is the first source: the extension owns its tasks and says what they are. Where it says
- * nothing (an older PI WEB, a session whose runtime is not open, a pi-background-tasks installed on
- * its own without this package's bridge) the state is unknown, and the page falls back to the
- * server half's read of the task records.
+ * The extension says what its tasks are now, and stops them. It knows the tasks of its own run only:
+ * a session opened again after its runtime closed starts with none, while the task records still
+ * hold what the session ran before. So the list is the records' read with the extension's word laid
+ * over it, task by task. Where the extension says nothing (an older PI WEB, a runtime that is not
+ * open) the records' read stands alone.
  */
 
 export const TASKS_CHANNEL = "background-runs:tasks";
@@ -68,8 +69,6 @@ export class PublishedTasks {
   viewFor(key: string, bus: SessionBus | undefined, now: number): TasksView | undefined {
     const state = bus?.state(TASKS_CHANNEL);
     if (bus === undefined || state === undefined || !state.known) return undefined;
-    /** The extension lists its newest 50. Past that a long-running task would drop off the list unseen, and the task records hold every one. */
-    if (isRecord(state.value) && state.value["more"] === true) return undefined;
     const json = JSON.stringify(state.value);
     if (this.held?.key !== key || this.held.json !== json) {
       const tasks = tasksFrom({ known: true, tasks: isRecord(state.value) ? state.value["tasks"] : undefined });
@@ -79,6 +78,23 @@ export class PublishedTasks {
     const machineNow = now + this.aheadMs(key, bus);
     return { tasks: this.held.tasks.map((task) => runningSince(task, machineNow)), read: "read", readAt: now };
   }
+
+  /** Whether the extension published this task for this session: only such a task can be asked of it. */
+  knows(key: string, taskId: string): boolean {
+    return this.held?.key === key && this.held.tasks.some((task) => task.id === taskId);
+  }
+}
+
+/**
+ * The list a session shows: every task of the records' read, each as the extension says it now when
+ * it publishes that task, and before them the tasks the records' read has not met yet.
+ */
+export function overRecords(published: TasksView, records: TasksView | undefined, now: number): TasksView {
+  if (records === undefined) return published;
+  const fresh = new Map(published.tasks.map((task) => [task.id, task]));
+  const recorded = tasksAt(records, now);
+  const met = new Set(recorded.map((task) => task.id));
+  return { tasks: [...published.tasks.filter((task) => !met.has(task.id)), ...recorded.map((task) => fresh.get(task.id) ?? task)], read: "read", readAt: now };
 }
 
 /**
