@@ -46,7 +46,7 @@ export interface BackgroundTaskInfo {
   readonly command: string;
   /**
    * The tool's own status, except that a running record whose process is gone or was replaced reads
-   * "lost", and one whose process could not be checked, or that names no process, reads "unknown".
+   * "lost", and one whose process could not be checked reads "unknown". A record that names no process is checked by the pi process its folder names.
    */
   readonly status: string;
   readonly startedAt?: string | undefined;

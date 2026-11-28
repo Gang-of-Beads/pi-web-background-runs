@@ -330,6 +330,10 @@ var PublishedTasks = class {
     const machineNow = now + this.aheadMs(key, bus);
     return { tasks: this.held.tasks.map((task) => runningSince(task, machineNow)), read: "read", readAt: now };
   }
+  /** Which tasks are published and in what state, for the session held: when it changes, the records changed too. */
+  signature(key) {
+    return this.held?.key === key ? this.held.tasks.map((task) => `${task.id}:${task.status}`).join(",") : void 0;
+  }
   /** What the extension asks the reader to do about its installation, if anything. */
   notice(key, bus) {
     const state = this.held?.key === key ? bus?.state(TASKS_CHANNEL) : void 0;
@@ -346,7 +350,8 @@ function overRecords(published, records, now) {
   const fresh = new Map(published.tasks.map((task) => [task.id, task]));
   const recorded = tasksAt(records, now);
   const met = new Set(recorded.map((task) => task.id));
-  return { tasks: [...published.tasks.filter((task) => !met.has(task.id)), ...recorded.map((task) => fresh.get(task.id) ?? task)], read: "read", readAt: now };
+  const read = records.read === "unread" && published.tasks.length > 0 ? "read" : records.read;
+  return { tasks: [...published.tasks.filter((task) => !met.has(task.id)), ...recorded.map((task) => fresh.get(task.id) ?? task)], read, readAt: now };
 }
 function runningSince(task, now) {
   const startedAt = task.status === "running" && task.startedAt !== void 0 ? Date.parse(task.startedAt) : Number.NaN;
@@ -631,6 +636,7 @@ var plugin = {
     const published = new PublishedTasks(() => {
       requestUpdate();
     });
+    let publishedSignature;
     const busKeyOf = (panel) => JSON.stringify([panel.machine.id, panel.session?.id]);
     const busFor = (panel, taskId) => {
       const bus = sessionBusOf(panel.session);
@@ -644,6 +650,9 @@ var plugin = {
       const fromBus = panel.session === void 0 ? void 0 : published.viewFor(busKeyOf(panel), sessionBusOf(panel.session), now);
       const scope = scopeOf(panel);
       if (scope === void 0) return fromBus ?? NO_TRANSCRIPT;
+      const signature = fromBus === void 0 ? void 0 : published.signature(busKeyOf(panel));
+      if (signature !== publishedSignature) reader.forget();
+      publishedSignature = signature;
       reader.follow(scope, readKeyOf(panel));
       const records = reader.viewFor(scope.sessionFile);
       return fromBus === void 0 ? records : overRecords(fromBus, records, now);
@@ -686,7 +695,7 @@ var plugin = {
       const readOutput = (taskId, tailBytes) => {
         const fromRecords = () => callOperation === void 0 ? Promise.reject(new Error("no operations")) : callOperation("tasks.output", { cwd: scope.cwd, sessionFile: scope.sessionFile, taskId, tailBytes });
         const bus = busFor(panel, taskId);
-        return bus !== void 0 && tailBytes <= OUTPUT_TAIL_BYTES ? bus.request(OUTPUT_CHANNEL, { id: taskId, tailBytes }).then(outputAnswer).catch(fromRecords) : fromRecords();
+        return bus !== void 0 && tailBytes <= OUTPUT_TAIL_BYTES ? bus.request(OUTPUT_CHANNEL, { id: taskId, tailBytes }).then((answer) => outputAnswer(answer) ?? fromRecords(), fromRecords) : fromRecords();
       };
       const stopPending = (key) => stops.has(key) && stops.get(key) === void 0;
       const session = panel.session;

@@ -8,11 +8,14 @@ import { join } from "node:path";
 var SEPARATE_INSTALL_WORDS = "pi-background-tasks is installed on its own as well as through pi-web-background-runs, which brings it. Remove the separate one: pi remove npm:pi-background-tasks";
 function sourceOf(entry) {
   if (typeof entry === "string") return entry;
-  const source = typeof entry === "object" && entry !== null ? Reflect.get(entry, "source") : void 0;
+  if (typeof entry !== "object" || entry === null) return void 0;
+  const extensions = Reflect.get(entry, "extensions");
+  if (Array.isArray(extensions) && extensions.length === 0) return void 0;
+  const source = Reflect.get(entry, "source");
   return typeof source === "string" ? source : void 0;
 }
 function namesBackgroundTasks(source) {
-  return /(^|[:/\\])pi-background-tasks(\.git)?(@[^/\\]*)?[/\\]?$/.test(source);
+  return /(^|[:/\\])pi-background-tasks(\.git)?([/\\]|@.*)?$/.test(source);
 }
 function packagesIn(settingsFile) {
   try {
@@ -22,8 +25,8 @@ function packagesIn(settingsFile) {
     return [];
   }
 }
-function separateInstall(cwd = process.cwd(), agentDir = process.env["PI_CODING_AGENT_DIR"] ?? join(homedir(), ".pi", "agent")) {
-  return [join(agentDir, "settings.json"), join(cwd, ".pi", "settings.json")].flatMap(packagesIn).some((entry) => {
+function separateInstall(agentDir = process.env["PI_CODING_AGENT_DIR"] || join(homedir(), ".pi", "agent")) {
+  return packagesIn(join(agentDir, "settings.json")).some((entry) => {
     const source = sourceOf(entry);
     return source !== void 0 && namesBackgroundTasks(source);
   });

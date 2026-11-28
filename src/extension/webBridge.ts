@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { BackgroundTaskHostClient, HostRefusal, type PiEvents } from "./hostClient.js";
 
 /**
@@ -6,8 +7,9 @@ import { BackgroundTaskHostClient, HostRefusal, type PiEvents } from "./hostClie
  *
  * The bridge follows the host interface's change feed and publishes, on the channels this package
  * declares under `piWeb.bus`:
- * `background-runs:tasks` (state: the newest tasks, as the Background page draws them), and answers
- * `background-runs:stop` and `background-runs:output` requests through that interface. In the
+ * `background-runs:tasks` (state: the newest tasks, as the Background page draws them, with a notice for the reader when the
+ * installation needs one), and answers `background-runs:stop` and `background-runs:output` requests
+ * through that interface and `background-runs:clock` with the machine's clock. In the
  * terminal nobody listens, and each publish is one no-op emit.
  *
  * It does not publish the session's "N background runs" state: the plugin's server half counts the
@@ -89,10 +91,12 @@ export interface WebBridge {
 }
 
 export function startWebBridge(events: PiEvents, now: () => number = Date.now, notice?: string): WebBridge {
-  const host = new BackgroundTaskHostClient(events, "pi-web-background-runs");
+  /** A name of its own: the task service hands a name's live lease back, and two clients on one lease refuse each other's request numbers. */
+  const host = new BackgroundTaskHostClient(events, `pi-web-background-runs-${randomUUID()}`);
   let reading = false;
   let again = false;
   let stopped = false;
+  let everListed = false;
 
   const publish = async (): Promise<void> => {
     if (stopped) return;
@@ -104,9 +108,12 @@ export function startWebBridge(events: PiEvents, now: () => number = Date.now, n
       const at = now();
       const tasks = views.flatMap((view: unknown) => { const task = publishedTask(view, at); return task === undefined ? [] : [task]; });
       if (stopped) return;
+      everListed = true;
       events.emit(TASKS_CHANNEL, { tasks, more: isRecord(listed) && typeof listed["nextCursor"] === "string", ...(notice === undefined ? {} : { notice }) });
     } catch {
       // No answer is not "no tasks": what was published stays, and the next change reads again.
+      /** A separate copy too old to answer still needs its notice read; the page lays an empty list over the records. */
+      if (!stopped && notice !== undefined && !everListed) events.emit(TASKS_CHANNEL, { tasks: [], more: false, notice });
     } finally {
       reading = false;
       if (again) { again = false; void publish(); }

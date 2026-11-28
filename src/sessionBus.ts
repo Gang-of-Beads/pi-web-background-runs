@@ -79,6 +79,11 @@ export class PublishedTasks {
     return { tasks: this.held.tasks.map((task) => runningSince(task, machineNow)), read: "read", readAt: now };
   }
 
+  /** Which tasks are published and in what state, for the session held: when it changes, the records changed too. */
+  signature(key: string): string | undefined {
+    return this.held?.key === key ? this.held.tasks.map((task) => `${task.id}:${task.status}`).join(",") : undefined;
+  }
+
   /** What the extension asks the reader to do about its installation, if anything. */
   notice(key: string, bus: SessionBus | undefined): string | undefined {
     const state = this.held?.key === key ? bus?.state(TASKS_CHANNEL) : undefined;
@@ -101,7 +106,9 @@ export function overRecords(published: TasksView, records: TasksView | undefined
   const fresh = new Map(published.tasks.map((task) => [task.id, task]));
   const recorded = tasksAt(records, now);
   const met = new Set(recorded.map((task) => task.id));
-  return { tasks: [...published.tasks.filter((task) => !met.has(task.id)), ...recorded.map((task) => fresh.get(task.id) ?? task)], read: "read", readAt: now };
+  /** A records' read that has not landed leaves the published tasks standing; one that failed says so over them. */
+  const read = records.read === "unread" && published.tasks.length > 0 ? "read" : records.read;
+  return { tasks: [...published.tasks.filter((task) => !met.has(task.id)), ...recorded.map((task) => fresh.get(task.id) ?? task)], read, readAt: now };
 }
 
 /**

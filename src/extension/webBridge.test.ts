@@ -16,13 +16,18 @@ function busWithService(tasks: Record<string, unknown>[]) {
     },
   };
   const operations: string[] = [];
+  let leases = 0;
+  let highWater = 0;
   const stopped: unknown[] = [];
   events.on(HOST_REQUEST_CHANNEL, (data) => {
     const request = data as { request_id: string; operation: string; payload: Record<string, unknown> };
     operations.push(request.operation);
     const reply = (body: Record<string, unknown>): void => { queueMicrotask(() => { events.emit(HOST_RESPONSE_CHANNEL, { request_id: request.request_id, operation: request.operation, ...body }); }); };
-    if (request.operation === "subscribe") { reply({ ok: true, result: { leaseId: "lease-1", activationId: "act-1" } }); return; }
-    if (request.payload["leaseId"] !== "lease-1") { reply({ ok: false, error: { code: "LEASE_INVALID", message: "no such lease" } }); return; }
+    if (request.operation === "subscribe") { leases += 1; highWater = 0; reply({ ok: true, result: { leaseId: `lease-${String(leases)}`, activationId: "act-1" } }); return; }
+    if (request.payload["leaseId"] !== `lease-${String(leases)}`) { reply({ ok: false, error: { code: "LEASE_INVALID", message: "no such lease" } }); return; }
+    const sequence = Number(request.payload["sequence"]);
+    if (!(sequence > highWater)) { reply({ ok: false, error: { code: "CONFLICT", message: "sequence was already used" } }); return; }
+    highWater = sequence;
     if (request.operation === "list") { reply({ ok: true, result: { tasks: tasks.map((task) => ({ task, kind: "shell" })), nextCursor: null } }); return; }
     if (request.operation === "stop") {
       const known = tasks.some((task) => task["id"] === request.payload["taskId"]);

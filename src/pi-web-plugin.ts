@@ -49,6 +49,7 @@ const plugin: PiWebPlugin = {
       requestUpdate();
     });
     const published = new PublishedTasks(() => { requestUpdate(); });
+    let publishedSignature: string | undefined;
     const busKeyOf = (panel: WorkspacePanelContext): string => JSON.stringify([panel.machine.id, panel.session?.id]);
     /** The bus to ask about one task: the session's, when its extension published that task. Any other task is the records' and `/kill`'s. */
     const busFor = (panel: WorkspacePanelContext, taskId: string): SessionBus | undefined => {
@@ -62,6 +63,10 @@ const plugin: PiWebPlugin = {
       const fromBus = panel.session === undefined ? undefined : published.viewFor(busKeyOf(panel), sessionBusOf(panel.session), now);
       const scope = scopeOf(panel);
       if (scope === undefined) return fromBus ?? NO_TRANSCRIPT;
+      /** The reader's key cannot see one task ending as another starts; the extension's word can, and so can its falling silent. */
+      const signature = fromBus === undefined ? undefined : published.signature(busKeyOf(panel));
+      if (signature !== publishedSignature) reader.forget();
+      publishedSignature = signature;
       reader.follow(scope, readKeyOf(panel));
       const records = reader.viewFor(scope.sessionFile);
       return fromBus === undefined ? records : overRecords(fromBus, records, now);
@@ -116,7 +121,7 @@ const plugin: PiWebPlugin = {
           : callOperation("tasks.output", { cwd: scope.cwd, sessionFile: scope.sessionFile, taskId, tailBytes });
         /** A refusal there (a task with no output file, most often) is answered in more words by the records' read. */
         const bus = busFor(panel, taskId);
-        return bus !== undefined && tailBytes <= OUTPUT_TAIL_BYTES ? bus.request(OUTPUT_CHANNEL, { id: taskId, tailBytes }).then(outputAnswer).catch(fromRecords) : fromRecords();
+        return bus !== undefined && tailBytes <= OUTPUT_TAIL_BYTES ? bus.request(OUTPUT_CHANNEL, { id: taskId, tailBytes }).then((answer) => outputAnswer(answer) ?? fromRecords(), fromRecords) : fromRecords();
       };
       const stopPending = (key: string): boolean => stops.has(key) && stops.get(key) === undefined;
       const session = panel.session;
