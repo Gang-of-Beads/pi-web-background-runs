@@ -1,7 +1,7 @@
 {
   "name": "@gang-of-beads/pi-web-background-runs",
-  "version": "0.1.5",
-  "description": "PI WEB plugin for pi-background-tasks: a Background tab listing the session's tasks, a running count in the activity line, and task-ended notices in the conversation.",
+  "version": "0.2.0",
+  "description": "Background tasks for pi with their PI WEB half: pi-background-tasks' bg_run tools in the terminal and a Background page in PI WEB, from one install.",
   "license": "MIT",
   "type": "module",
   "keywords": [
@@ -41,7 +41,21 @@
           "kill"
         ]
       }
-    ]
+    ],
+    "bus": {
+      "background-runs:tasks": {
+        "kind": "state"
+      },
+      "background-runs:stop": {
+        "kind": "request"
+      },
+      "background-runs:output": {
+        "kind": "request"
+      },
+      "background-runs:clock": {
+        "kind": "request"
+      }
+    }
   },
   "scripts": {
     "build": "node build.mjs",
@@ -55,5 +69,15 @@
     "esbuild": "^0.28.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "pi-background-tasks": "2.6.10"
+  },
+  "pi": {
+    "extensions": [
+      "./dist/extensions/anthropic-attribution.js",
+      "./dist/extensions/background-tasks.js",
+      "./dist/extensions/web-bridge.js"
+    ]
   }
 }

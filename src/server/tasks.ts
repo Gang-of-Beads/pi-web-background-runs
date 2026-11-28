@@ -46,7 +46,7 @@ export interface BackgroundTaskInfo {
   readonly command: string;
   /**
    * The tool's own status, except that a running record whose process is gone or was replaced reads
-   * "lost", and one whose process could not be checked, or that names no process, reads "unknown".
+   * "lost", and one whose process could not be checked reads "unknown". A record that names no process is checked by the pi process its folder names.
    */
   readonly status: string;
   readonly startedAt?: string | undefined;
@@ -189,13 +189,32 @@ export function runningRecordStatus(start: ProcessStart, startedAtMs: number | u
 }
 
 /**
- * A running record's status. One with no pid names no process to check, so whether it still runs is
- * unknown: pi-background-tasks' managed (fusion) runs carry no pid for their whole life.
+ * The pi process a record's folder belongs to: pi-background-tasks names the folder
+ * `<session id>-<pid of the pi process>`.
  */
-async function probedRunningStatus(task: StoredTask, probeProcessStart: ProbeProcessStart): Promise<RunningRecordStatus> {
+export function ownerPidOf(file: string): number | undefined {
+  const pid = /-(\d+)$/.exec(basename(dirname(file)))?.[1];
+  return pid === undefined ? undefined : Number(pid);
+}
+
+/**
+ * Whether a run with no process of its own still runs. pi-background-tasks' managed (fusion) runs
+ * carry no pid for their whole life: they live inside the pi process that started them and end with
+ * it. So such a run is running while that process is, as long as that process is older than the
+ * run; a younger one inherited the number.
+ */
+export function managedRunStatus(owner: ProcessStart, startedAtMs: number | undefined): RunningRecordStatus {
+  if (owner.kind === "gone") return "lost";
+  if (owner.kind === "unreadable") return "unknown";
+  return startedAtMs === undefined || owner.atMs <= startedAtMs + PID_REUSE_TOLERANCE_MS ? "running" : "lost";
+}
+
+/** A running record's status: its own process when it names one, else the pi process its folder names. */
+async function probedRunningStatus(task: StoredTask, file: string, probeProcessStart: ProbeProcessStart): Promise<RunningRecordStatus> {
   const pid = asNumber(task.pid);
-  if (pid === undefined) return "unknown";
-  return runningRecordStatus(await probeProcessStart(pid), asNumber(task.startTime));
+  if (pid !== undefined) return runningRecordStatus(await probeProcessStart(pid), asNumber(task.startTime));
+  const owner = ownerPidOf(file);
+  return owner === undefined ? "unknown" : managedRunStatus(await probeProcessStart(owner), asNumber(task.startTime));
 }
 
 /**
@@ -410,7 +429,7 @@ export async function runningTaskIds(
   const running = new Set<string>();
   for (const [id, record] of await readTaskRecords(cwd)) {
     if (asString(record.task.status) !== "running") continue;
-    if (await probedRunningStatus(record.task, probeProcessStart) !== "running") continue;
+    if (await probedRunningStatus(record.task, record.file, probeProcessStart) !== "running") continue;
     running.add(id);
   }
   return running;
@@ -522,7 +541,7 @@ export async function listBackgroundTasks(
     const rawStatus = asString(task.status) ?? "unknown";
     const startedAt = asNumber(task.startTime);
     const endedAt = asNumber(task.endTime);
-    const status = rawStatus === "running" ? await probedRunningStatus(task, probeProcessStart) : rawStatus;
+    const status = rawStatus === "running" ? await probedRunningStatus(task, record.file, probeProcessStart) : rawStatus;
     tasks.push({
       id,
       name: asString(task.name) ?? id,

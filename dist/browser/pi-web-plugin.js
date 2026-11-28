@@ -280,6 +280,97 @@ function outputFrom(answer) {
   return void 0;
 }
 
+// src/sessionBus.ts
+var TASKS_CHANNEL = "background-runs:tasks";
+var STOP_CHANNEL = "background-runs:stop";
+var OUTPUT_CHANNEL = "background-runs:output";
+var CLOCK_CHANNEL = "background-runs:clock";
+function isRecord2(value) {
+  return typeof value === "object" && value !== null;
+}
+function isSessionBus(value) {
+  return isRecord2(value) && typeof value["state"] === "function" && typeof value["request"] === "function";
+}
+function sessionBusOf(session) {
+  const bus = isRecord2(session) ? session["bus"] : void 0;
+  return isSessionBus(bus) ? bus : void 0;
+}
+var PublishedTasks = class {
+  constructor(changed = () => void 0) {
+    this.changed = changed;
+  }
+  changed;
+  held;
+  /** How far the machine's clock is ahead of this device's, asked once a session; 0 until it answers. */
+  clock;
+  aheadMs(key, bus) {
+    if (this.clock?.key === key) return this.clock.aheadMs;
+    const asked = { key, aheadMs: 0 };
+    this.clock = asked;
+    const sentAt = Date.now();
+    bus.request(CLOCK_CHANNEL).then((answer) => {
+      const machineNow = isRecord2(answer) ? answer["now"] : void 0;
+      if (typeof machineNow !== "number") return;
+      const receivedAt = Date.now();
+      asked.aheadMs = machineNow - (sentAt + receivedAt) / 2;
+      this.changed();
+    }, () => void 0);
+    return 0;
+  }
+  /** The view for a session, or undefined when its extension published nothing this page can read. */
+  viewFor(key, bus, now) {
+    const state = bus?.state(TASKS_CHANNEL);
+    if (bus === void 0 || state === void 0 || !state.known) return void 0;
+    const json = JSON.stringify(state.value);
+    if (this.held?.key !== key || this.held.json !== json) {
+      const tasks = tasksFrom({ known: true, tasks: isRecord2(state.value) ? state.value["tasks"] : void 0 });
+      if (tasks === void 0) return void 0;
+      this.held = { key, json, tasks };
+    }
+    const machineNow = now + this.aheadMs(key, bus);
+    return { tasks: this.held.tasks.map((task) => runningSince(task, machineNow)), read: "read", readAt: now };
+  }
+  /** Which tasks are published and in what state, for the session held: when it changes, the records changed too. */
+  signature(key) {
+    return this.held?.key === key ? this.held.tasks.map((task) => `${task.id}:${task.status}`).join(",") : void 0;
+  }
+  /** What the extension asks the reader to do about its installation, if anything. */
+  notice(key, bus) {
+    const state = this.held?.key === key ? bus?.state(TASKS_CHANNEL) : void 0;
+    const words = state?.known === true && isRecord2(state.value) ? state.value["notice"] : void 0;
+    return typeof words === "string" ? words : void 0;
+  }
+  /** Whether the extension published this task for this session: only such a task can be asked of it. */
+  knows(key, taskId) {
+    return this.held?.key === key && this.held.tasks.some((task) => task.id === taskId);
+  }
+};
+function overRecords(published, records, now) {
+  if (records === void 0) return published;
+  const fresh = new Map(published.tasks.map((task) => [task.id, task]));
+  const recorded = tasksAt(records, now);
+  const met = new Set(recorded.map((task) => task.id));
+  const read = records.read === "unread" && published.tasks.length > 0 ? "read" : records.read;
+  return { tasks: [...published.tasks.filter((task) => !met.has(task.id)), ...recorded.map((task) => fresh.get(task.id) ?? task)], read, readAt: now };
+}
+function runningSince(task, now) {
+  const startedAt = task.status === "running" && task.startedAt !== void 0 ? Date.parse(task.startedAt) : Number.NaN;
+  return Number.isNaN(startedAt) ? task : { ...task, durationMs: Math.max(task.durationMs ?? 0, now - startedAt) };
+}
+function outputAnswer(result) {
+  return isRecord2(result) ? { known: true, ...result } : void 0;
+}
+function answerLost(error) {
+  const code = isRecord2(error) ? error["code"] : void 0;
+  return code === "timeout" || code === "unreachable" || code === "session-changed" || error instanceof Error && error.message.startsWith("NO_ANSWER");
+}
+function stopOutcome(settled) {
+  if (!("error" in settled)) return { kind: "ran", notices: [{ level: "info", message: "Stopped" }] };
+  if (answerLost(settled.error)) return { kind: "unknown", words: "" };
+  const words = settled.error instanceof Error ? settled.error.message : "The task could not be stopped.";
+  return { kind: "ran", notices: [{ level: "error", message: words }] };
+}
+
 // src/commandLayout.ts
 var STAGE_ENDS = /* @__PURE__ */ new Set(["&&", "||", "|", "|&", ";"]);
 var URL_TEXT = /[\w%.~-]/;
@@ -542,14 +633,29 @@ var plugin = {
       reader.forget();
       requestUpdate();
     });
+    const published = new PublishedTasks(() => {
+      requestUpdate();
+    });
+    let publishedSignature;
+    const busKeyOf = (panel) => JSON.stringify([panel.machine.id, panel.session?.id]);
+    const busFor = (panel, taskId) => {
+      const bus = sessionBusOf(panel.session);
+      return bus !== void 0 && published.viewFor(busKeyOf(panel), bus, Date.now()) !== void 0 && published.knows(busKeyOf(panel), taskId) ? bus : void 0;
+    };
     const viewOf = (panel) => {
       requestUpdate = () => {
         panel.host.requestRender();
       };
+      const now = Date.now();
+      const fromBus = panel.session === void 0 ? void 0 : published.viewFor(busKeyOf(panel), sessionBusOf(panel.session), now);
       const scope = scopeOf(panel);
-      if (scope === void 0) return NO_TRANSCRIPT;
+      if (scope === void 0) return fromBus ?? NO_TRANSCRIPT;
+      const signature = fromBus === void 0 ? void 0 : published.signature(busKeyOf(panel));
+      if (signature !== publishedSignature) reader.forget();
+      publishedSignature = signature;
       reader.follow(scope, readKeyOf(panel));
-      return reader.viewFor(scope.sessionFile);
+      const records = reader.viewFor(scope.sessionFile);
+      return fromBus === void 0 ? records : overRecords(fromBus, records, now);
     };
     const opened = /* @__PURE__ */ new Set();
     const stops = /* @__PURE__ */ new Map();
@@ -580,20 +686,31 @@ var plugin = {
     const rowControls = (panel, scope) => {
       const renderOutput = ui?.renderOutput;
       const renderButton = ui?.renderButton;
-      if (ui === void 0 || renderOutput === void 0 || renderButton === void 0 || callOperation === void 0) return {};
+      const publishes = sessionBusOf(panel.session) !== void 0 && published.viewFor(busKeyOf(panel), sessionBusOf(panel.session), Date.now()) !== void 0;
+      if (ui === void 0 || renderOutput === void 0 || renderButton === void 0 || callOperation === void 0 && !publishes) return {};
       const rowUi = { renderOutput, renderButton };
       const machineId = panel.machine.id;
       const sessionKey = JSON.stringify([machineId, scope.sessionFile]);
       const keyOf = (taskId) => JSON.stringify([machineId, scope.sessionFile, taskId]);
-      const readOutput = (taskId, tailBytes) => callOperation("tasks.output", { cwd: scope.cwd, sessionFile: scope.sessionFile, taskId, tailBytes });
+      const readOutput = (taskId, tailBytes) => {
+        const fromRecords = () => callOperation === void 0 ? Promise.reject(new Error("no operations")) : callOperation("tasks.output", { cwd: scope.cwd, sessionFile: scope.sessionFile, taskId, tailBytes });
+        const bus = busFor(panel, taskId);
+        return bus !== void 0 && tailBytes <= OUTPUT_TAIL_BYTES ? bus.request(OUTPUT_CHANNEL, { id: taskId, tailBytes }).then((answer) => outputAnswer(answer) ?? fromRecords(), fromRecords) : fromRecords();
+      };
       const stopPending = (key) => stops.has(key) && stops.get(key) === void 0;
       const session = panel.session;
       const runCommand = session?.runCommand;
-      const stop = session === void 0 || runCommand === void 0 ? void 0 : (row2) => {
+      const sendStop = (row2) => {
+        const bus = busFor(panel, row2.id);
+        if (bus !== void 0) return bus.request(STOP_CHANNEL, { id: row2.id }).then(() => stopOutcome({}), (error) => stopOutcome({ error }));
+        if (session === void 0 || runCommand === void 0) return void 0;
+        return runCommand({ sessionId: session.id, name: "kill", args: row2.id }).catch(() => LOST_ANSWER);
+      };
+      const stop = !publishes && (session === void 0 || runCommand === void 0) ? void 0 : (row2) => {
         const key = keyOf(row2.id);
         stops.set(key, void 0);
         requestUpdate();
-        return runCommand({ sessionId: session.id, name: "kill", args: row2.id }).catch(() => LOST_ANSWER).then((outcome) => {
+        return (sendStop(row2) ?? Promise.resolve(LOST_ANSWER)).then((outcome) => {
           stops.set(key, outcome);
           reader.forget();
           requestUpdate();
@@ -669,7 +786,7 @@ var plugin = {
               const count = running.length;
               void confirm({
                 title: `Stop ${String(count)} background ${count === 1 ? "run" : "runs"}?`,
-                message: "Each one is sent /kill now. What they wrote so far stays in their output.",
+                message: "Each one is stopped now. What they wrote so far stays in their output.",
                 confirmLabel: "Stop all",
                 tone: "danger"
               }).then((confirmed) => {
@@ -708,7 +825,9 @@ var plugin = {
               if (ui?.renderList === void 0) return html`<p class="muted">This list needs a newer PI WEB on this device.</p>`;
               const tasks = tasksAt(view, Date.now());
               if (tasks.some((task) => task.status === "running")) tickElapsed();
-              return ui.renderList(backgroundListModel(tasks, view.read, localClockTime, scope === void 0 ? {} : rowControls(panel, scope)));
+              const notice = published.notice(busKeyOf(panel), sessionBusOf(panel.session));
+              const list = ui.renderList(backgroundListModel(tasks, view.read, localClockTime, scope === void 0 ? {} : rowControls(panel, scope)));
+              return notice === void 0 ? list : html`<p class="muted" role="status">${notice}</p>${list}`;
             }
           }
         ],
